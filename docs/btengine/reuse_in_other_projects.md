@@ -29,6 +29,7 @@ Notas:
 
 - prefira pin por `tag` ou `commit` para reproducibilidade.
 - `scripts/` nao e API publica; trate como exemplos.
+- Exemplo de consumidor externo: `C:\\4mti\\Projetos\\tbot_funding_arb`.
 
 ## 2) Fronteira da API para consumo externo
 

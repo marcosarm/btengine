@@ -1,124 +1,101 @@
 # Quickstart
 
-## 1) Instalar dependencias
+## 1) Install dependencies
 
-No ambiente virtual do projeto:
+In a virtualenv:
 
 ```bash
 pip install -e .
 pip install -e ".[dev]"
 ```
 
-Rodar testes:
+Run tests:
 
 ```bash
 pytest -q
 ```
 
-## 1b) Consumir o btengine em outro repositorio
+## 1b) Consume btengine in another repo
 
-No `pyproject.toml` do projeto consumidor, voce pode instalar por Git pinado:
-
-```bash
-pip install "git+https://github.com/marcosarm/btengine.git@<commit-ou-tag>"
-```
-
-Durante desenvolvimento local (duas pastas lado a lado), use editable install:
+Git pin:
 
 ```bash
-pip install -e C:\\caminho\\btengine
+pip install "git+https://github.com/marcosarm/btengine.git@<commit-or-tag>"
 ```
 
-No projeto `tbot_funding_arb`, instale o pacote de estratégia separadamente:
+Local editable:
 
 ```bash
-pip install -e C:\\caminho\\tbot_funding_arb
+pip install -e C:\\path\\to\\btengine
 ```
 
-Guia completo de reuso:
-
+Full reuse guide:
 - `docs/btengine/reuse_in_other_projects.md`
 
-## 2) Configurar acesso ao S3 (CryptoHFTData)
+## 2) Configure S3 access (CryptoHFTData)
 
-Use `.env.example` como template e crie um `.env` local.
-
-O tooling de scripts usa um `.env` com chaves como:
+Use `.env.example` as a template and create a local `.env`.
 
 ```dotenv
 AWS_REGION=ap-northeast-1
 S3_BUCKET=amzn-tdata
 S3_PREFIX=hftdata
 
-# Opcional (se nao usar IAM role/profile):
+# Optional (if you are not using default AWS credentials chain):
 AWS_ACCESS_KEY_ID=...
 AWS_SECRET_ACCESS_KEY=...
 ```
 
-Notas:
+## 3) Validate dataset quickly (S3)
 
-- Nao commitar `.env` com segredos.
-- O Arrow/AWS SDK suportam a cadeia padrao de credenciais; usar `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` e opcional.
-
-## 3) Validar rapidamente o dataset (S3)
-
-Exemplo: validar `BTCUSDT` no dia `2025-07-01` (UTC) e apenas a hora 12 do orderbook:
+Example: validate `BTCUSDT` on `2025-07-01` (UTC) for hour 12:
 
 ```bash
 python scripts\\validate_s3_dataset.py --day 2025-07-01 --symbols BTCUSDT --hours 12-12
 ```
 
-## 4) Replay de dados no motor (sem estrategia)
+## 4) Replay data in the engine (no strategy)
 
-Exemplo: replay de uma janela (hora 12) e resumo do estado do book/portfolio:
+Example:
 
 ```bash
 python scripts\\run_backtest_replay.py --day 2025-07-01 --symbols BTCUSDT --mark-price-symbols BTCUSDT --hours 12-12 --max-events 200000 --include-ticker --include-open-interest --include-liquidations
 ```
 
-O script deriva automaticamente uma janela `[start,end)` a partir de `--hours` e fatia trades/mark_price/orderbook para a mesma janela.
+The script derives a `[start,end)` window from `--hours` and applies it to
+trades/orderbook/mark_price via `CryptoHftDayConfig.stream_start_ms/stream_end_ms`.
 
-## 4b) Setup simples com entrada + saida (gera PnL)
-
-Exemplo: 1 round-trip (entrada 30s apos inicio, segura 60s e sai):
+## 4b) Simple entry/exit setup (PnL sanity check)
 
 ```bash
 python scripts\\run_backtest_entry_exit.py --day 2025-07-01 --symbol BTCUSDT --hours 12-12 --direction long --qty 0.001 --enter-offset-s 30 --hold-s 60
 ```
 
-## 4c) Setup simples com MA(9) em candles 5m
-
-Exemplo: price vs MA9 (compra/vende no cruzamento) usando `mark_price` como fonte de preco:
+## 4c) Simple MA(9) strategy on 5m bars
 
 ```bash
 python scripts\\run_backtest_ma_cross.py --day 2025-07-01 --symbol BTCUSDT --hours 12-13 --tf-min 5 --ma-len 9 --price-source mark --rule cross --mode long_short --qty 0.001
 ```
 
-## 4d) Batch multi-dia com validacao temporal e guard de book
-
-Para validar mais de um dia e reduzir impacto de horarios com book degradado:
+## 4d) Multi-day batch with book guard
 
 ```bash
 python scripts\\run_backtest_batch.py --start-day 2025-07-20 --days 5 --symbol BTCUSDT --hours 0-23 --setup ma_cross --tf-min 5 --ma-len 9 --price-source mark --rule cross --mode long_short --qty 0.001 --include-ticker --include-open-interest --include-liquidations --strict-book --out-csv batch_5d.csv
 ```
 
-Opcoes uteis do strict guard:
-
-- `--strict-book-max-spread` (absoluto)
-- `--strict-book-max-spread-bps` (relativo ao mid)
+Useful guard knobs:
+- `--strict-book-max-spread`
+- `--strict-book-max-spread-bps`
 - `--strict-book-max-staleness-ms`
 - `--strict-book-cooldown-ms`
 - `--strict-book-warmup-depth-updates`
 
-## 4e) Basis + Funding (Perp x Trimestral)
+## 4e) Strategy examples (external)
 
-Exemplo de batch dedicado para estrategia de referencia de funding+basis:
+Full strategies live in consumer repos, not in btengine.
+Example: `C:\\4mti\\Projetos\\tbot_funding_arb`.
 
-```bash
-python scripts\\run_backtest_basis_funding.py --start-day 2026-02-01 --days 1 --hours 12-12 --perp-symbol BTCUSDT --future-symbol BTCUSDT_260626 --include-ticker --include-open-interest --include-liquidations --out-csv batch_basis_funding.csv
-```
-
-## 5) Rodar um backtest via codigo (exemplo minimo)
+## 5) Minimal code example
 
 ```python
 from __future__ import annotations
@@ -149,7 +126,7 @@ class DemoStrategy:
     did_submit: bool = False
 
     def on_event(self, event: DepthUpdate | Trade | MarkPrice, ctx: EngineContext) -> None:
-        # Exemplo: assim que tivermos book, envia uma ordem market (taker).
+        # Submit a market order once the book exists.
         if self.did_submit:
             return
         book = ctx.books.get(self.symbol)

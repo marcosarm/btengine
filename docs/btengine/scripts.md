@@ -1,99 +1,93 @@
-# Scripts (validacao e replay)
+# Scripts (validation and replay)
 
-Os scripts vivem em `scripts/` e sao voltados para:
+Scripts live in `scripts/` and are intended to:
+- inspect local Parquets
+- validate the S3 dataset (existence, schema, ranges)
+- replay data through `btengine` for sanity checks
 
-- inspecionar Parquets locais
-- validar o dataset no S3 (existencia, schema, ranges)
-- replayar dados no motor `btengine` para sanity-check
+Strategy examples live in consumer repos (not in btengine).
 
 ## `validate_s3_dataset.py`
 
-Arquivo: `scripts/validate_s3_dataset.py`
+File: `scripts/validate_s3_dataset.py`
 
-Objetivo:
+Purpose:
+- check S3 files exist for a given day
+- inspect Parquet quickly: rows, row groups, Arrow schema, min/max timestamps
+- for orderbook: min/max `final_update_id` + continuity per hour
 
-- checar se os arquivos do dia existem no S3
-- inspecionar rapidamente: numero de linhas, row groups, schema Arrow, min/max de timestamps
-- para orderbook: min/max de `final_update_id` e checagem simples de continuidade por hora
-
-Exemplos:
+Examples:
 
 ```bash
-# BTCUSDT (dia inteiro)
+# BTCUSDT (full day)
 python scripts\\validate_s3_dataset.py --day 2025-07-01 --symbols BTCUSDT --hours 0-23
 
-# Apenas a hora 12 do orderbook
+# Hour 12 only
 python scripts\\validate_s3_dataset.py --day 2025-07-01 --symbols BTCUSDT --hours 12-12
 
-# Multiplos simbolos (ex: perp + future)
+# Multiple symbols
 python scripts\\validate_s3_dataset.py --day 2025-07-01 --symbols BTCUSDT,BTCUSDT_260626 --hours 12-12 --skip-missing
 ```
 
-Notas:
-
-- O script le `.env` por default do root (use `.env.example` como template).
-- Ele nao imprime credenciais.
-- `--skip-missing` trata `FileNotFoundError` como "MISSING" (nao falha o processo por arquivos ausentes).
+Notes:
+- reads `.env` from repo root (use `.env.example` as template)
+- does not print credentials
+- `--skip-missing` treats `FileNotFoundError` as "MISSING" and continues
 
 ## `run_backtest_replay.py`
 
-Arquivo: `scripts/run_backtest_replay.py`
+File: `scripts/run_backtest_replay.py`
 
-Objetivo:
+Purpose:
+- build S3 streams (per symbol)
+- merge multi-symbol streams
+- run `BacktestEngine` with a no-op strategy
+- print summary (books, PnL, event counts)
 
-- montar streams no S3 (por simbolo)
-- fazer merge multi-simbolo
-- rodar no `BacktestEngine` com uma estrategia no-op
-- imprimir resumo (books, PnL, contagem de eventos)
-
-Exemplo:
+Example:
 
 ```bash
 python scripts\\run_backtest_replay.py --day 2025-07-01 --symbols BTCUSDT --mark-price-symbols BTCUSDT --hours 12-12 --max-events 200000
 ```
 
-O script:
+The script:
+- derives a `[start,end)` window from `--hours` (UTC)
+- applies the same window to trades/orderbook/mark_price via `CryptoHftDayConfig.stream_start_ms/stream_end_ms`
 
-- deriva uma janela `[start,end)` a partir de `--hours` (UTC)
-- aplica a mesma janela em trades/orderbook/mark_price via `CryptoHftDayConfig.stream_start_ms/stream_end_ms`
-
-Streams opcionais:
+Optional streams:
 
 ```bash
 python scripts\\run_backtest_replay.py --day 2025-07-01 --symbols BTCUSDT --hours 12-12 --include-ticker --include-open-interest --include-liquidations
 ```
 
-Se estiver explorando simbolos/dias com cobertura incompleta:
+If exploring partial coverage:
 
 ```bash
 python scripts\\run_backtest_replay.py --day 2025-07-01 --symbols BTCUSDT,BTCUSDT_260626 --hours 12-12 --skip-missing
 ```
 
-Knobs de execucao (para estrategias que submetem ordens):
-
+Execution knobs (for strategies that submit orders):
 - `--submit-latency-ms`
 - `--cancel-latency-ms`
 - `--maker-queue-ahead-factor`
 - `--maker-queue-ahead-extra-qty`
 - `--maker-trade-participation`
 
-Knobs de dados (anti-lookahead):
-
-- `--open-interest-delay-ms`: atrasa a disponibilidade do snapshot de open interest em relacao ao `timestamp` (ex: 5s, 30s).
+Data knobs (anti-lookahead):
+- `--open-interest-delay-ms`
 
 ## `run_backtest_entry_exit.py`
 
-Arquivo: `scripts/run_backtest_entry_exit.py`
+File: `scripts/run_backtest_entry_exit.py`
 
-Objetivo:
+Purpose:
+- run a simple entry/exit setup (market orders)
+- compute realized PnL and fees
+- print basic stats:
+  - round trips reconstructed from fills (wins/losses, net/gross, duration)
+  - equity curve sampled on `mark_price` + max drawdown
 
-- rodar um setup simples de entrada + saida (market) para gerar operacoes (fills)
-- aferir lucro/prejuizo (PnL realizado) e fees
-- imprimir estatisticas basicas:
-  - round trips reconstruidos a partir de fills (wins/losses, net/gross, duracao)
-  - curva de equity (PnL) amostrada em `mark_price` + max drawdown
-
-Exemplo (BTCUSDT, 2h, 3 ciclos):
+Example:
 
 ```bash
 python scripts\\run_backtest_entry_exit.py --day 2025-07-01 --symbol BTCUSDT --hours 12-13 --direction long --qty 0.001 --enter-offset-s 30 --hold-s 60 --gap-s 60 --cycles 3 --out-fills-csv fills.csv --out-equity-csv equity.csv
@@ -101,18 +95,17 @@ python scripts\\run_backtest_entry_exit.py --day 2025-07-01 --symbol BTCUSDT --h
 
 ## `run_backtest_ma_cross.py`
 
-Arquivo: `scripts/run_backtest_ma_cross.py`
+File: `scripts/run_backtest_ma_cross.py`
 
-Objetivo:
+Purpose:
+- build bars by timeframe (e.g. 5m)
+- compute MA(N) and generate signals:
+  - `rule=cross`: trade only on cross (price vs MA)
+  - `rule=state`: stay long if price>=MA, short if price<MA
+- execute market orders to reach target position
+- print PnL, fees, round trips and equity curve + max drawdown
 
-- criar candles por timeframe (ex: 5m)
-- calcular MA(N) e gerar sinais:
-  - `rule=cross`: compra/vende apenas no cruzamento (price vs MA)
-  - `rule=state`: fica long quando price>=MA e short quando price<MA
-- executar ordens market (taker) para atingir o target (+qty / -qty / flat)
-- imprimir PnL, fees, round trips e equity curve + max drawdown
-
-Exemplo (BTCUSDT, MA9, candles 5m, usar `mark_price` como fonte de preco):
+Example:
 
 ```bash
 python scripts\\run_backtest_ma_cross.py --day 2025-07-01 --symbol BTCUSDT --hours 12-13 --tf-min 5 --ma-len 9 --price-source mark --rule cross --mode long_short --qty 0.001 --out-fills-csv fills.csv --out-equity-csv equity.csv
@@ -120,93 +113,59 @@ python scripts\\run_backtest_ma_cross.py --day 2025-07-01 --symbol BTCUSDT --hou
 
 ## `run_backtest_batch.py`
 
-Arquivo: `scripts/run_backtest_batch.py`
+File: `scripts/run_backtest_batch.py`
 
-Objetivo:
+Purpose:
+- run a setup across multiple days (entry_exit or ma_cross)
+- validate temporal continuity per day
+- consolidate metrics and PnL into CSV
+- optional book guard (`--strict-book`) to reduce impact of bad data
 
-- rodar setup por varios dias (entry_exit ou ma_cross)
-- validar temporalidade/continuidade por dia
-- consolidar metricas e PnL em CSV
-- opcionalmente ativar guard de book (`--strict-book`) para reduzir impacto de dados ruins
-
-Exemplo (5 dias, MA9 5m, full day):
+Example (5 days, MA9 5m, full day):
 
 ```bash
 python scripts\\run_backtest_batch.py --start-day 2025-07-20 --days 5 --symbol BTCUSDT --hours 0-23 --setup ma_cross --tf-min 5 --ma-len 9 --price-source mark --rule cross --mode long_short --qty 0.001 --include-ticker --include-open-interest --include-liquidations --strict-book --out-csv batch_5d.csv
 ```
 
-Knobs principais de guard:
-
-- `--strict-book-max-spread`: spread absoluto maximo permitido
-- `--strict-book-max-spread-bps`: spread maximo relativo ao mid (bps)
-- `--strict-book-max-staleness-ms`: idade maxima do ultimo depth update
-- `--strict-book-cooldown-ms`: bloqueio temporario apos trip
-- `--strict-book-warmup-depth-updates`: bloqueio por N updates apos trip
+Guard knobs:
+- `--strict-book-max-spread`
+- `--strict-book-max-spread-bps`
+- `--strict-book-max-staleness-ms`
+- `--strict-book-cooldown-ms`
+- `--strict-book-warmup-depth-updates`
 - `--strict-book-reset-on-mismatch` / `--strict-book-no-reset-on-mismatch`
 - `--strict-book-reset-on-crossed` / `--strict-book-no-reset-on-crossed`
 
-Colunas relevantes no CSV:
-
-- qualidade temporal: `out_of_order`, `duplicates`, `outside_window`
-- continuidade: `final_id_nonmonotonic`, `prev_id_mismatch`
-- sanidade do book: `book_crossed`, `book_missing_side`, `spread_*`
+CSV columns:
+- temporal: `out_of_order`, `duplicates`, `outside_window`
+- continuity: `final_id_nonmonotonic`, `prev_id_mismatch`
+- book sanity: `book_crossed`, `book_missing_side`, `spread_*`
 - guard: `strict_guard_*`, `strict_blocked_submits`, `strict_blocked_submit_reason`
-- resultado: `round_trips`, `net_pnl_usdt`, `fees_usdt`, `max_drawdown_usdt`
-
-## `run_backtest_basis_funding.py`
-
-Arquivo: `scripts/run_backtest_basis_funding.py`
-
-Objetivo:
-
-- rodar backtest da estrategia de referencia de funding+basis (perp x future)
-- processar batch multi-dia com duas pernas simultaneas
-- consolidar sinais/execucao/risco basico em CSV por dia
-
-Exemplo (1 dia, janela 12:00-13:00 UTC):
-
-```bash
-python scripts\\run_backtest_basis_funding.py --start-day 2026-02-01 --days 1 --hours 12-12 --perp-symbol BTCUSDT --future-symbol BTCUSDT_260626 --include-ticker --include-open-interest --include-liquidations --out-csv batch_basis_funding.csv
-```
-
-Principais parametros:
-
-- par de symbols: `--perp-symbol`, `--future-symbol`
-- regime/sinal: `--z-window`, `--vol-ratio-window`, `--z-exit-eps`, `--z-hard-stop`
-- funding/financeiro: `--funding-threshold`, `--entry-safety-margin`, `--max-slippage`
-- liquidez: `--impact-notional-usdt`, `--liquidity-min-ratio`, `--liquidity-depth-pct`
-- operacao: `--entry-cooldown-sec`, `--hedge-eps-base`, `--no-reverse`
-
-Colunas principais no CSV:
-
-- entradas/saidas: `entries_standard`, `entries_reverse`, `exits_*`
-- risco/execucao: `liquidity_rejects`, `hedge_actions`, `state_end`
-- resultado: `net_pnl_usdt`, `fees_usdt`, `realized_pnl_usdt`, `max_drawdown_usdt`
+- results: `round_trips`, `net_pnl_usdt`, `fees_usdt`, `max_drawdown_usdt`
 
 ## `analyze_replay_temporal.py`
 
-Arquivo: `scripts/analyze_replay_temporal.py`
+File: `scripts/analyze_replay_temporal.py`
 
-Objetivo:
+Purpose:
+- validate temporal ordering (per stream and merge)
+- check `[start,end)` window
+- check orderbook continuity (`prev_final_update_id` vs `final_update_id`)
+- sanity-check the book (spread and crossed book)
 
-- validar ordenacao temporal (por stream e no merge)
-- checar se a janela `[start,end)` esta sendo respeitada
-- checar continuidade do orderbook (`prev_final_update_id` vs `final_update_id`)
-- sanity-check do book (spread e book crossed, amostrado a cada N updates)
-
-Exemplo:
+Example:
 
 ```bash
 python scripts\\analyze_replay_temporal.py --day 2025-07-01 --symbols BTCUSDT --hours 12-12 --include-ticker --include-open-interest --include-liquidations --skip-missing --max-events 0 --book-check-every 5000
 ```
 
-Se quiser simular atraso de publicacao de open interest:
+To simulate open interest delay:
 
 ```bash
 python scripts\\analyze_replay_temporal.py --day 2025-07-01 --symbols BTCUSDT --hours 12-12 --include-open-interest --open-interest-delay-ms 5000
 ```
 
-Opcionalmente, voce pode controlar a janela explicitamente:
+Optionally control the window explicitly:
 
 ```bash
 python scripts\\run_backtest_replay.py --day 2025-07-01 --symbols BTCUSDT --hours 0-23 --start-utc 2025-07-01T12:00:00Z --end-utc 2025-07-01T13:00:00Z
@@ -214,17 +173,16 @@ python scripts\\run_backtest_replay.py --day 2025-07-01 --symbols BTCUSDT --hour
 
 ## `inspect_orderbook_parquet.py` (local)
 
-Arquivo: `scripts/inspect_orderbook_parquet.py`
+File: `scripts/inspect_orderbook_parquet.py`
 
-Objetivo:
+Purpose:
+- print Parquet schema and metadata
+- check `event_time` range
+- check monotonicity (`event_time`, `final_update_id`)
+- rows per message (group by `final_update_id`)
+- basic continuity via `prev_final_update_id`
 
-- imprimir schema/metadados do parquet
-- checar range de `event_time`
-- checar monotonicidade (event_time, final_update_id)
-- estatistica de rows por mensagem (group by `final_update_id`)
-- continuidade basica via `prev_final_update_id`
-
-Exemplo:
+Example:
 
 ```bash
 python scripts\\inspect_orderbook_parquet.py C:\\Users\\marco\\Downloads\\orderbook_00.parquet
@@ -232,14 +190,13 @@ python scripts\\inspect_orderbook_parquet.py C:\\Users\\marco\\Downloads\\orderb
 
 ## `replay_orderbook.py` (local)
 
-Arquivo: `scripts/replay_orderbook.py`
+File: `scripts/replay_orderbook.py`
 
-Objetivo:
+Purpose:
+- apply L2 deltas into an in-memory `L2Book`
+- print periodic snapshots (best bid/ask, mid, impact VWAP)
 
-- aplicar deltas L2 no `L2Book`
-- imprimir snapshots periodicos (best bid/ask, mid, impact VWAP)
-
-Exemplo:
+Example:
 
 ```bash
 python scripts\\replay_orderbook.py C:\\Users\\marco\\Downloads\\orderbook_00.parquet --max-messages 2000

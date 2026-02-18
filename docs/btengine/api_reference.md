@@ -111,11 +111,11 @@ Pacote: `src/btengine/analytics/`
 - `summarize_round_trips(trades: list[RoundTrip]) -> RoundTripSummary`
 - `max_drawdown(equity_curve: list[(time_ms, equity)]) -> float | None`
 
-## Estrategia de exemplo (no repo)
+## Estrategia de exemplo (repo externo)
 
-Este repositorio inclui uma estrategia de exemplo que usa o `btengine`, mas nao faz parte do pacote `btengine` (para manter a biblioteca generica):
+Estrategias completas vivem em repos consumidores. Exemplo:
 
-- `funding/basis_funding.py`
+- `C:\\4mti\\Projetos\\tbot_funding_arb\\funding\\basis_funding.py`
   - `BasisFundingStrategy` (perp x future)
   - basis por mid-price (`basis_signal_mid`)
   - custo de execucao por impact price (`execution_cost_std_rev`)

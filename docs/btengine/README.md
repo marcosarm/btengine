@@ -84,3 +84,12 @@ Rodar testes:
 ```bash
 pytest -q
 ```
+
+## Estrategias (repos externos)
+
+Estrategias completas vivem em repos consumidores.
+Exemplo: `C:\\4mti\\Projetos\\tbot_funding_arb`.
+
+## Contexto
+
+Para uma nova instancia do Codex, veja `CONTEXT.md` e `AGENTS.md` no root.
