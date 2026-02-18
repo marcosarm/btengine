@@ -2,6 +2,7 @@
 
 This file is a quick start context for a new Codex instance working on btengine.
 The engine is isolated here; strategy code lives in consumer repos.
+Repo is private; use SSH or a GitHub PAT for access.
 
 ## Goals
 - reusable, event-driven backtest engine
@@ -21,6 +22,12 @@ The engine is isolated here; strategy code lives in consumer repos.
 pip install -e .
 pip install -e ".[dev]"
 pytest -q
+```
+
+Private Git install (consumer repo):
+
+```bash
+pip install "git+ssh://git@github.com/marcosarm/btengine.git@v0.1.0"
 ```
 
 ## Environment (S3 / CryptoHFTData)

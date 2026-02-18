@@ -12,10 +12,10 @@ Opcao A: dependencia local (desenvolvimento paralelo):
 pip install -e C:\\caminho\\btengine
 ```
 
-Opcao B: dependencia via Git (recomendado para CI):
+Opcao B: dependencia via Git (recomendado para CI, repo privado):
 
 ```bash
-pip install "git+https://github.com/marcosarm/btengine.git@<commit-ou-tag>"
+pip install "git+ssh://git@github.com/marcosarm/btengine.git@<commit-ou-tag>"
 ```
 
 Opcao C: wheel interno (recomendado para ambiente controlado):
@@ -30,6 +30,7 @@ Notas:
 - prefira pin por `tag` ou `commit` para reproducibilidade.
 - `scripts/` nao e API publica; trate como exemplos.
 - Exemplo de consumidor externo: `C:\\4mti\\Projetos\\tbot_funding_arb`.
+- Repo privado: use SSH ou um PAT com acesso ao GitHub.
 
 ## 2) Fronteira da API para consumo externo
 

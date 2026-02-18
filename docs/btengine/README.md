@@ -85,6 +85,11 @@ Rodar testes:
 pytest -q
 ```
 
+## Acesso (repo privado)
+
+- O repositorio `btengine` e privado.
+- Use SSH (`git@github.com:marcosarm/btengine.git`) ou um PAT.
+
 ## Estrategias (repos externos)
 
 Estrategias completas vivem em repos consumidores.

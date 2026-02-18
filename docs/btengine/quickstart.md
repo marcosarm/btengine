@@ -17,10 +17,10 @@ pytest -q
 
 ## 1b) Consume btengine in another repo
 
-Git pin:
+Git pin (private, SSH):
 
 ```bash
-pip install "git+https://github.com/marcosarm/btengine.git@<commit-or-tag>"
+pip install "git+ssh://git@github.com/marcosarm/btengine.git@<commit-or-tag>"
 ```
 
 Local editable:

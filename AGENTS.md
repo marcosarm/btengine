@@ -2,6 +2,7 @@
 
 This repo is the btengine backtest engine only.
 Do not add strategy code here; use consumer repos (example: `C:\\4mti\\Projetos\\tbot_funding_arb`).
+Repo is private; use SSH or a GitHub PAT for access.
 
 ## Key locations
 - Engine code: `src\\btengine\\`
@@ -15,6 +16,12 @@ Do not add strategy code here; use consumer repos (example: `C:\\4mti\\Projetos\
 pip install -e .
 pip install -e ".[dev]"
 pytest -q
+```
+
+Private Git install (consumer repo):
+
+```bash
+pip install "git+ssh://git@github.com/marcosarm/btengine.git@v0.1.0"
 ```
 
 ## Environment
