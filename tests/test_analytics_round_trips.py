@@ -1,5 +1,6 @@
 from btengine.analytics import max_drawdown, round_trips_from_fills, summarize_round_trips
 from btengine.broker import Fill
+from btengine.portfolio import Portfolio
 
 
 def test_round_trips_from_fills_single_long_round_trip():
@@ -110,3 +111,44 @@ def test_max_drawdown():
     eq = [(0, 0.0), (1, 10.0), (2, 5.0), (3, 12.0), (4, 7.0)]
     assert abs(max_drawdown(eq) - (-5.0)) < 1e-12
 
+
+def test_round_trips_are_fill_only_and_exclude_funding():
+    fills = [
+        Fill(
+            order_id="entry",
+            symbol="BTCUSDT",
+            side="buy",
+            quantity=1.0,
+            price=100.0,
+            fee_usdt=0.0,
+            event_time_ms=0,
+            liquidity="taker",
+        ),
+        Fill(
+            order_id="exit",
+            symbol="BTCUSDT",
+            side="sell",
+            quantity=1.0,
+            price=100.0,
+            fee_usdt=0.0,
+            event_time_ms=1_000,
+            liquidity="taker",
+        ),
+    ]
+
+    # Funding can affect portfolio PnL, but round_trips_from_fills ignores it by design.
+    pf = Portfolio()
+    pf.apply_fill("BTCUSDT", "buy", qty=1.0, price=100.0, fee_usdt=0.0)
+    funding_pnl = pf.apply_funding("BTCUSDT", mark_price=100.0, funding_rate=0.01)
+    assert abs(funding_pnl - (-1.0)) < 1e-12
+
+    trades = round_trips_from_fills(fills)
+    assert len(trades) == 1
+    assert abs(trades[0].net_pnl_usdt - 0.0) < 1e-12
+
+
+def test_max_drawdown_uses_the_provided_curve_only():
+    eq_a = [(0, 0.0), (1, 2.0), (2, 1.0)]
+    eq_b = [(0, 0.0), (1, 10.0), (2, 9.0), (3, 8.0)]
+    assert abs(max_drawdown(eq_a) - (-1.0)) < 1e-12
+    assert abs(max_drawdown(eq_b) - (-2.0)) < 1e-12

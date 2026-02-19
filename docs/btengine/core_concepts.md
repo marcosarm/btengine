@@ -30,12 +30,13 @@ No `EngineContext`, os ultimos valores por simbolo sao mantidos em:
 ## Stream ordering e merge
 
 `btengine.replay.merge_event_streams()` faz um k-way merge de multiplos streams assumindo que cada um esta ordenado por `event_time_ms`.
+Em empate de `event_time_ms`, o desempate usa `received_time_ns` (quando disponivel) e depois ordem do stream.
 
 No adapter CryptoHFTData:
 
 - orderbook: pode precisar ordenar por `final_update_id` para reconstruir a ordem correta do stream (ver `iter_depth_updates`)
 - trades: pode precisar ordenar por `trade_time`
-- mark_price: assume-se que ja vem ordenado por `event_time`
+- mark_price: detecta e, se necessario, ordena por `event_time`
 
 Se um stream nao estiver ordenado, o merge pode produzir "viagem no tempo" e quebrar invariantes do motor.
 
@@ -56,6 +57,8 @@ Quando setados, o `build_day_stream()` fatia trades/orderbook/mark_price antes d
 - `btengine.engine.EngineConfig.trading_end_ms`
 - `EngineContext.is_trading_time()`
 
+Nota: o engine bloqueia `ctx.broker.submit(...)` fora dessa janela (mas os callbacks ainda rodam para warmup/estado).
+
 Um padrao comum e:
 
 - alimentar o motor com um periodo de warmup (para construir book/indicadores)
@@ -66,6 +69,7 @@ Um padrao comum e:
 `EngineConfig.tick_interval_ms` ativa ticks discretos. O engine:
 
 - ancora o primeiro tick no primeiro evento observado
+- o primeiro tick e exatamente o timestamp do primeiro evento (nao ha "floor" para alinhar na grade)
 - chama `strategy.on_tick(tick_ms, ctx)` em grade fixa ate o timestamp do evento atual
 
 Isso e util para estrategias que rodam logica periodica (ex: a cada 1s) sem depender de cada evento.

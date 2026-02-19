@@ -16,6 +16,7 @@ Funcoes importantes:
 - `impact_vwap(side, target_notional)`:
   - calcula VWAP de consumo de liquidez ate atingir um notional alvo
   - retorna `NaN` se profundidade insuficiente
+  - se `max_levels` limitar a profundidade e causar falso `NaN`, faz retry com profundidade total
 
 ## Ordens: `Order`
 
@@ -100,6 +101,7 @@ Retorno:
 
 - `(avg_price, filled_qty)`; se nao preenche, retorna `(NaN, 0.0)`
 - O broker usa `consume_taker_fill(...)` (mutante, com self-impact). A funcao `simulate_taker_fill(...)` existe como versao pura (nao muta o book).
+- `consume_taker_fill(...)` consome iterativamente o melhor nivel do book, evitando sort completo do lado a cada submit.
 
 ### Maker fill (post-only / GTC)
 

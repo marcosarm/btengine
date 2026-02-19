@@ -29,3 +29,13 @@ def test_impact_vwap_insufficient_depth_returns_nan():
     vwap = book.impact_vwap("buy", 100.0, max_levels=10)
     assert math.isnan(vwap)
 
+
+def test_impact_vwap_retries_with_full_depth_when_max_levels_limits():
+    book = L2Book()
+    # Asks: 1 @ 100, 1 @ 101, 1 @ 102
+    book.apply_depth_update(bid_updates=[], ask_updates=[(100.0, 1.0), (101.0, 1.0), (102.0, 1.0)])
+
+    # With max_levels=1 the first level is insufficient, but full depth is enough.
+    vwap = book.impact_vwap("buy", 150.0, max_levels=1)
+    assert not math.isnan(vwap)
+    assert abs(vwap - (150.0 / (1.0 + 50.0 / 101.0))) < 1e-9

@@ -1,4 +1,6 @@
-from btengine.replay import slice_event_stream
+from dataclasses import dataclass
+
+from btengine.replay import merge_event_streams, slice_event_stream
 from btengine.types import Trade
 
 
@@ -38,3 +40,45 @@ def test_slice_event_stream_start_end_slices_half_open_interval():
     out = list(slice_event_stream(events, start_ms=2, end_ms=4))
     assert [e.event_time_ms for e in out] == [2, 3]
 
+
+@dataclass(frozen=True)
+class _Ev:
+    event_time_ms: int
+    tag: str
+
+
+def test_merge_event_streams_orders_by_time():
+    s1 = [_Ev(1, "a1"), _Ev(3, "a3")]
+    s2 = [_Ev(2, "b2"), _Ev(4, "b4")]
+    out = list(merge_event_streams(s1, s2))
+    assert [(e.event_time_ms, e.tag) for e in out] == [(1, "a1"), (2, "b2"), (3, "a3"), (4, "b4")]
+
+
+def test_merge_event_streams_stable_tie_breaker_by_stream_order():
+    s1 = [_Ev(1_000, "s1_first"), _Ev(2_000, "s1_tie")]
+    s2 = [_Ev(1_500, "s2_mid"), _Ev(2_000, "s2_tie")]
+    out = list(merge_event_streams(s1, s2))
+    # Tie at 2000 keeps stream order (s1 before s2).
+    assert [(e.event_time_ms, e.tag) for e in out] == [
+        (1_000, "s1_first"),
+        (1_500, "s2_mid"),
+        (2_000, "s1_tie"),
+        (2_000, "s2_tie"),
+    ]
+
+
+@dataclass(frozen=True)
+class _EvRecv:
+    event_time_ms: int
+    received_time_ns: int
+    tag: str
+
+
+def test_merge_event_streams_tie_breaker_prefers_received_time_when_available():
+    s1 = [_EvRecv(1_000, 200, "s1_late_recv")]
+    s2 = [_EvRecv(1_000, 100, "s2_early_recv")]
+    out = list(merge_event_streams(s1, s2))
+    assert [(e.event_time_ms, e.tag) for e in out] == [
+        (1_000, "s2_early_recv"),
+        (1_000, "s1_late_recv"),
+    ]

@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Iterable, Protocol
 
 from .broker import SimBroker
+from .execution.orders import Order
 from .marketdata.orderbook import L2Book
 from .types import DepthUpdate, Liquidation, MarkPrice, OpenInterest, Ticker, Trade
 
@@ -92,6 +93,45 @@ class BacktestResult:
     ctx: EngineContext
 
 
+class _TradingWindowBroker:
+    """Proxy broker that blocks submits outside the trading window."""
+
+    def __init__(self, inner: SimBroker, ctx: EngineContext) -> None:
+        self._inner = inner
+        self._ctx = ctx
+
+    @property
+    def portfolio(self):
+        return self._inner.portfolio
+
+    @property
+    def fills(self):
+        return self._inner.fills
+
+    def has_open_orders(self) -> bool:
+        return self._inner.has_open_orders()
+
+    def on_time(self, now_ms: int) -> None:
+        return self._inner.on_time(now_ms)
+
+    def on_depth_update(self, update: DepthUpdate, book: L2Book) -> None:
+        return self._inner.on_depth_update(update, book)
+
+    def on_trade(self, trade: Trade, now_ms: int) -> None:
+        return self._inner.on_trade(trade, now_ms=now_ms)
+
+    def submit(self, order: Order, book: L2Book, now_ms: int) -> None:
+        if not self._ctx.is_trading_time():
+            return
+        return self._inner.submit(order, book, now_ms)
+
+    def cancel(self, order_id: str, *, now_ms: int | None = None) -> None:
+        return self._inner.cancel(order_id, now_ms=now_ms)
+
+    def __getattr__(self, name: str):
+        return getattr(self._inner, name)
+
+
 class BacktestEngine:
     def __init__(self, *, config: EngineConfig, broker: SimBroker | None = None) -> None:
         self.config = config
@@ -99,6 +139,7 @@ class BacktestEngine:
 
     def run(self, events: Iterable[Event], *, strategy: Strategy) -> BacktestResult:
         ctx = EngineContext(config=self.config, broker=self.broker)
+        ctx.broker = _TradingWindowBroker(self.broker, ctx)
 
         # Optional methods: let a strategy implement only the hooks it needs.
         on_start = getattr(strategy, "on_start", None)
@@ -119,7 +160,7 @@ class BacktestEngine:
             if tick_interval > 0 and callable(on_tick):
                 if next_tick_ms is None:
                     # Anchor ticks to the first observed timestamp.
-                    next_tick_ms = (now // tick_interval) * tick_interval
+                    next_tick_ms = now
 
                 while next_tick_ms <= now:
                     ctx.now_ms = next_tick_ms

@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pyarrow.fs as fs
+import pyarrow.parquet as pq
 
 
 def resolve_filesystem_and_path(path_or_uri: str | Path) -> tuple[fs.FileSystem | None, str]:
@@ -33,3 +34,25 @@ def resolve_path(path_or_uri: str | Path) -> str:
 
     filesystem, path = fs.FileSystem.from_uri(s)
     return path
+
+
+def parquet_column_is_monotonic_non_decreasing(pf: pq.ParquetFile, column: str) -> bool:
+    """Check monotonic non-decreasing order for a parquet column across all row groups."""
+
+    prev_last: int | float | None = None
+    for rg in range(pf.num_row_groups):
+        t = pf.read_row_group(rg, columns=[column])
+        arr = t[column].to_numpy(zero_copy_only=False)
+        if len(arr) == 0:
+            continue
+
+        if len(arr) > 1 and not bool((arr[1:] >= arr[:-1]).all()):
+            return False
+
+        first = arr[0]
+        last = arr[-1]
+        if prev_last is not None and first < prev_last:
+            return False
+        prev_last = last
+
+    return True

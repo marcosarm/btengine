@@ -91,9 +91,11 @@ O adapter faz:
 
 - orderbook: detecta (heuristica) e, se necessario, ordena por `final_update_id` para reconstruir mensagens coerentes (`iter_depth_updates`)
 - trades: detecta e, se necessario, ordena por `trade_time` (`iter_trades`)
+- mark_price: detecta e, se necessario, ordena por `event_time` (`iter_mark_price`)
 
 Tradeoff:
 
+- a deteccao de ordenacao avalia row groups ao longo do arquivo (nao apenas o primeiro), para reduzir falso "ordenado"
 - ordenar costuma exigir ler o arquivo inteiro na memoria (por hora, no caso do orderbook)
 - isso e mais custoso, mas evita bugs de replay (mensagens quebradas / viagem no tempo)
 

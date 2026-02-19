@@ -71,6 +71,10 @@ def consume_taker_fill(
 
     This is identical to `simulate_taker_fill(...)` but mutates `book` by
     decrementing quantities on the opposite side for the consumed levels.
+
+    Implementation note:
+    - Uses `best_bid()`/`best_ask()` iteratively, so consumption cost is closer
+      to O(k log n) for k consumed levels (instead of sorting the full side).
     """
 
     if quantity <= 0:
@@ -81,12 +85,10 @@ def consume_taker_fill(
     cost = 0.0
 
     if side == "buy":
-        # Consume asks (low -> high)
-        levels = sorted(book.asks.items(), key=lambda x: x[0])
-
         def crosses(p: float) -> bool:
             return limit_price is not None and p > limit_price
 
+        best_level = book.best_ask
         side_map = book.asks
         heap = book._ask_heap
 
@@ -94,12 +96,10 @@ def consume_taker_fill(
             return p
 
     elif side == "sell":
-        # Consume bids (high -> low)
-        levels = sorted(book.bids.items(), key=lambda x: x[0], reverse=True)
-
         def crosses(p: float) -> bool:
             return limit_price is not None and p < limit_price
 
+        best_level = book.best_bid
         side_map = book.bids
         heap = book._bid_heap
 
@@ -109,13 +109,17 @@ def consume_taker_fill(
     else:
         raise ValueError(f"invalid side: {side!r}")
 
-    for price, lvl_qty in levels:
-        if remaining <= 0:
+    while remaining > 0.0:
+        price = best_level()
+        if price is None:
             break
-        if lvl_qty <= 0:
-            continue
         if crosses(price):
             break
+
+        lvl_qty = float(side_map.get(float(price), 0.0))
+        if lvl_qty <= eps_qty:
+            side_map.pop(float(price), None)
+            continue
 
         take = lvl_qty if lvl_qty <= remaining else remaining
         filled += take

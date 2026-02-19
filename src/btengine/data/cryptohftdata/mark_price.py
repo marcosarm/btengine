@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, Literal
 
 import pyarrow as pa
 import pyarrow.compute as pc
@@ -10,12 +10,28 @@ import pyarrow.fs as fs
 import pyarrow.parquet as pq
 
 from ...types import MarkPrice
-from ._arrow import resolve_filesystem_and_path, resolve_path
+from ._arrow import parquet_column_is_monotonic_non_decreasing, resolve_filesystem_and_path, resolve_path
 from .paths import CryptoHftLayout
 
 
 def iter_mark_price(parquet_path: str | Path, *, filesystem: fs.FileSystem | None = None) -> Iterator[MarkPrice]:
-    """Iterate MarkPrice events from a CryptoHFTData `mark_price.parquet` file."""
+    """Iterate MarkPrice events from a CryptoHFTData `mark_price.parquet` file.
+
+    Events are yielded in ascending `event_time`. If the parquet is not stored
+    in monotonic order, this function auto-detects and sorts when needed.
+    """
+
+    sort_mode: Literal["auto", "always", "never"] = "auto"
+    yield from iter_mark_price_advanced(parquet_path, filesystem=filesystem, sort_mode=sort_mode)
+
+
+def iter_mark_price_advanced(
+    parquet_path: str | Path,
+    *,
+    filesystem: fs.FileSystem | None = None,
+    sort_mode: Literal["auto", "always", "never"] = "auto",
+) -> Iterator[MarkPrice]:
+    """Advanced variant with explicit sort control."""
 
     if filesystem is None:
         filesystem, resolved_path = resolve_filesystem_and_path(parquet_path)
@@ -32,6 +48,46 @@ def iter_mark_price(parquet_path: str | Path, *, filesystem: fs.FileSystem | Non
         "funding_rate",
         "next_funding_time",
     ]
+
+    needs_sort = sort_mode == "always"
+    if sort_mode == "auto":
+        needs_sort = not parquet_column_is_monotonic_non_decreasing(pf, "event_time")
+
+    if sort_mode == "never":
+        needs_sort = False
+
+    if needs_sort:
+        table = pf.read(columns=cols)
+        table = table.set_column(table.schema.get_field_index("mark_price"), "mark_price", pc.cast(table["mark_price"], pa.float64()))
+        table = table.set_column(
+            table.schema.get_field_index("index_price"), "index_price", pc.cast(table["index_price"], pa.float64())
+        )
+        table = table.set_column(
+            table.schema.get_field_index("funding_rate"), "funding_rate", pc.cast(table["funding_rate"], pa.float64())
+        )
+        sort_idx = pc.sort_indices(table["event_time"])
+        table = table.take(sort_idx)
+
+        received = table["received_time"].to_numpy(zero_copy_only=False)
+        event_time = table["event_time"].to_numpy(zero_copy_only=False)
+        symbol = table["symbol"].to_numpy(zero_copy_only=False)
+
+        mark = table["mark_price"].to_numpy(zero_copy_only=False)
+        index = table["index_price"].to_numpy(zero_copy_only=False)
+        funding = table["funding_rate"].to_numpy(zero_copy_only=False)
+        next_ft = table["next_funding_time"].to_numpy(zero_copy_only=False)
+
+        for i in range(len(received)):
+            yield MarkPrice(
+                received_time_ns=int(received[i]),
+                event_time_ms=int(event_time[i]),
+                symbol=str(symbol[i]),
+                mark_price=float(mark[i]),
+                index_price=float(index[i]),
+                funding_rate=float(funding[i]),
+                next_funding_time_ms=int(next_ft[i]),
+            )
+        return
 
     for rg in range(pf.num_row_groups):
         table = pf.read_row_group(rg, columns=cols)

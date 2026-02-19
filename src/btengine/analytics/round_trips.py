@@ -61,7 +61,12 @@ class _OpenState:
 
 
 def round_trips_from_fills(fills: list[Fill]) -> list[RoundTrip]:
-    """Reconstruct per-symbol round trips from a fill list."""
+    """Reconstruct per-symbol round trips from a fill list.
+
+    This function is intentionally fill-only:
+    - Funding is not considered here.
+    - Any funding impact must be analyzed separately from portfolio/equity data.
+    """
 
     # Keep it deterministic: stable sort by timestamp and insertion order.
     fills_sorted = sorted(enumerate(fills), key=lambda x: (int(x[1].event_time_ms), x[0]))
@@ -181,9 +186,9 @@ def summarize_round_trips(trades: list[RoundTrip]) -> RoundTripSummary:
 
 
 def max_drawdown(equity_curve: list[tuple[int, float]]) -> float | None:
-    """Compute max drawdown from an equity curve (time_ms, equity_pnl).
+    """Compute max drawdown from a caller-provided equity curve (time_ms, equity_pnl).
 
-    Returns the minimum (most negative) drawdown value.
+    Returns the minimum (most negative) drawdown value from the provided series.
     """
 
     if not equity_curve:
@@ -199,4 +204,3 @@ def max_drawdown(equity_curve: list[tuple[int, float]]) -> float | None:
         if dd < mdd:
             mdd = dd
     return float(mdd)
-

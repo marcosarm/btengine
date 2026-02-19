@@ -10,7 +10,7 @@ import pyarrow.fs as fs
 import pyarrow.parquet as pq
 
 from ...types import OpenInterest
-from ._arrow import resolve_filesystem_and_path, resolve_path
+from ._arrow import parquet_column_is_monotonic_non_decreasing, resolve_filesystem_and_path, resolve_path
 from .paths import CryptoHftLayout
 
 
@@ -45,13 +45,8 @@ def iter_open_interest_advanced(
     ]
 
     needs_sort = sort_mode == "always"
-    if sort_mode == "auto" and pf.num_row_groups > 0:
-        sample = pf.read_row_group(0, columns=["timestamp"])
-        arr = sample["timestamp"].to_numpy(zero_copy_only=False)
-        if len(arr) > 1:
-            monotonic = bool((arr[1:] >= arr[:-1]).all())
-            if not monotonic:
-                needs_sort = True
+    if sort_mode == "auto":
+        needs_sort = not parquet_column_is_monotonic_non_decreasing(pf, "timestamp")
 
     if sort_mode == "never":
         needs_sort = False

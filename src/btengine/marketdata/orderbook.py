@@ -105,7 +105,9 @@ class L2Book:
     ) -> float:
         """VWAP for consuming liquidity until `target_notional` is reached.
 
-        Returns NaN when there is insufficient depth available.
+        Returns NaN when there is insufficient depth available. If `max_levels`
+        limits depth and would cause a false NaN, this retries once with full
+        depth (max_levels=0).
         """
 
         if target_notional <= 0:

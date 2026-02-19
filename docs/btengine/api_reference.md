@@ -34,6 +34,7 @@ Arquivo: `src/btengine/engine.py`
   - `tick_interval_ms: int`
   - `trading_start_ms: int | None`
   - `trading_end_ms: int | None`
+  - ticks: o primeiro tick e ancorado exatamente no timestamp do primeiro evento observado (sem "floor")
 - `EngineContext`
   - `now_ms: int`
   - `books: dict[str, L2Book]`
@@ -73,7 +74,7 @@ Arquivo: `src/btengine/marketdata/orderbook.py`
 - `L2Book`
   - `apply_depth_update(bid_updates, ask_updates)`
   - `best_bid()`, `best_ask()`, `mid_price()`
-  - `impact_vwap(side, target_notional, max_levels=..., eps_notional=...)`
+  - `impact_vwap(side, target_notional, max_levels=..., eps_notional=...)` (faz retry com profundidade total se `max_levels` causar falso NaN)
 
 ## Execucao e broker
 

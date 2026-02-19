@@ -11,13 +11,24 @@ class HasEventTimeMs(Protocol):
 T = TypeVar("T", bound=HasEventTimeMs)
 
 
+def _received_time_ns_or_default(ev: object) -> int:
+    x = getattr(ev, "received_time_ns", None)
+    if x is None:
+        # Keep old behavior (stream order tie-break) for event-like objects
+        # without receive timestamp.
+        return 2**63 - 1
+    return int(x)
+
+
 def merge_event_streams(*streams: Iterable[T]) -> Iterator[T]:
     """Merge multiple event streams ordered by `event_time_ms`.
 
     This keeps only one event buffered per stream (k-way merge).
+    For same `event_time_ms`, events are tie-broken by `received_time_ns`
+    when available, then by stream order.
     """
 
-    heap: list[tuple[int, int, T, Iterator[T]]] = []
+    heap: list[tuple[int, int, int, T, Iterator[T]]] = []
     seq = 0
 
     for stream in streams:
@@ -25,16 +36,22 @@ def merge_event_streams(*streams: Iterable[T]) -> Iterator[T]:
         first = next(it, None)
         if first is None:
             continue
-        heapq.heappush(heap, (int(first.event_time_ms), seq, first, it))
+        heapq.heappush(
+            heap,
+            (int(first.event_time_ms), _received_time_ns_or_default(first), seq, first, it),
+        )
         seq += 1
 
     while heap:
-        _, s, ev, it = heapq.heappop(heap)
+        _, _, s, ev, it = heapq.heappop(heap)
         yield ev
 
         nxt = next(it, None)
         if nxt is not None:
-            heapq.heappush(heap, (int(nxt.event_time_ms), s, nxt, it))
+            heapq.heappush(
+                heap,
+                (int(nxt.event_time_ms), _received_time_ns_or_default(nxt), s, nxt, it),
+            )
 
 
 def slice_event_stream(

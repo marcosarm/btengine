@@ -31,6 +31,36 @@ class CryptoHftOrderbookRow:
     quantity: float
 
 
+def _orderbook_needs_sort_auto(pf: pq.ParquetFile) -> bool:
+    """Heuristic to detect whether `final_update_id` sorting is needed.
+
+    Scans all row groups (not only the first) to catch late disorder and
+    interleaving.
+    """
+
+    prev_last_final: int | None = None
+
+    for rg in range(pf.num_row_groups):
+        sample = pf.read_row_group(rg, columns=["final_update_id"])
+        arr = sample["final_update_id"].to_numpy(zero_copy_only=False)
+        if len(arr) == 0:
+            continue
+
+        if prev_last_final is not None and int(arr[0]) < int(prev_last_final):
+            return True
+
+        if len(arr) > 1:
+            segments = 1 + int(np.sum(arr[1:] != arr[:-1]))
+            unique = int(len(np.unique(arr)))
+            monotonic = bool(np.all(arr[1:] >= arr[:-1]))
+            if (not monotonic) or (unique > 0 and segments > unique * 1.2):
+                return True
+
+        prev_last_final = int(arr[-1])
+
+    return False
+
+
 def iter_depth_updates(parquet_path: str | Path, *, filesystem: fs.FileSystem | None = None) -> Iterator[DepthUpdate]:
     """Iterate DepthUpdate messages from a flattened orderbook parquet file.
 
@@ -96,17 +126,7 @@ def iter_depth_updates_advanced(
     # Decide whether sorting is needed.
     needs_sort = sort_mode == "always"
     if sort_mode == "auto":
-        # Use only the first row-group as a heuristic. If messages are interleaved
-        # in the file, this will show a very high segments/unique ratio.
-        if pf.num_row_groups > 0:
-            sample = pf.read_row_group(0, columns=["final_update_id"])
-            arr = sample["final_update_id"].to_numpy(zero_copy_only=False)
-            if len(arr) > 1:
-                segments = 1 + int(np.sum(arr[1:] != arr[:-1]))
-                unique = int(len(np.unique(arr)))
-                monotonic = bool(np.all(arr[1:] >= arr[:-1]))
-                if (not monotonic) or (unique > 0 and segments > unique * 1.2):
-                    needs_sort = True
+        needs_sort = _orderbook_needs_sort_auto(pf)
 
     if sort_mode == "never":
         needs_sort = False

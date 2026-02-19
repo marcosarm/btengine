@@ -1,6 +1,7 @@
 from btengine.engine import BacktestEngine, EngineConfig
 from btengine.broker import SimBroker
-from btengine.types import Liquidation, MarkPrice, OpenInterest, Ticker
+from btengine.execution.orders import Order
+from btengine.types import DepthUpdate, Liquidation, MarkPrice, OpenInterest, Ticker
 
 
 class NoopStrategy:
@@ -96,3 +97,112 @@ def test_engine_stores_latest_aux_events_in_context():
     assert ctx.ticker["BTCUSDT"].event_time_ms == 1_000
     assert ctx.open_interest["BTCUSDT"].event_time_ms == 2_000
     assert ctx.liquidation["BTCUSDT"].event_time_ms == 3_000
+
+
+class _SubmitOnDepth:
+    def __init__(self) -> None:
+        self.submits = 0
+
+    def on_event(self, event: object, ctx) -> None:
+        if not isinstance(event, DepthUpdate):
+            return
+        book = ctx.book(event.symbol)
+        ctx.broker.submit(
+            Order(id=f"o{self.submits}", symbol=event.symbol, side="buy", order_type="market", quantity=1.0),
+            book,
+            now_ms=ctx.now_ms,
+        )
+        self.submits += 1
+
+
+def test_engine_blocks_submits_outside_trading_window():
+    broker = SimBroker(maker_fee_frac=0.0, taker_fee_frac=0.0)
+    engine = BacktestEngine(
+        config=EngineConfig(tick_interval_ms=0, trading_start_ms=500, trading_end_ms=1_500),
+        broker=broker,
+    )
+
+    events = [
+        DepthUpdate(
+            received_time_ns=0,
+            event_time_ms=0,
+            transaction_time_ms=0,
+            symbol="BTCUSDT",
+            first_update_id=1,
+            final_update_id=1,
+            prev_final_update_id=0,
+            bid_updates=[(99.0, 10.0)],
+            ask_updates=[(100.0, 10.0)],
+        ),
+        DepthUpdate(
+            received_time_ns=0,
+            event_time_ms=1_000,
+            transaction_time_ms=1_000,
+            symbol="BTCUSDT",
+            first_update_id=2,
+            final_update_id=2,
+            prev_final_update_id=1,
+            bid_updates=[(99.0, 10.0)],
+            ask_updates=[(100.0, 10.0)],
+        ),
+        DepthUpdate(
+            received_time_ns=0,
+            event_time_ms=2_000,
+            transaction_time_ms=2_000,
+            symbol="BTCUSDT",
+            first_update_id=3,
+            final_update_id=3,
+            prev_final_update_id=2,
+            bid_updates=[(99.0, 10.0)],
+            ask_updates=[(100.0, 10.0)],
+        ),
+    ]
+
+    res = engine.run(events, strategy=_SubmitOnDepth())
+    fills = res.ctx.broker.fills
+    assert len(fills) == 1
+    assert fills[0].event_time_ms == 1_000
+    pos = res.ctx.broker.portfolio.positions["BTCUSDT"]
+    assert abs(pos.qty - 1.0) < 1e-12
+
+
+class _TickRecorder:
+    def __init__(self) -> None:
+        self.ticks: list[int] = []
+
+    def on_tick(self, now_ms: int, ctx) -> None:
+        self.ticks.append(int(now_ms))
+
+
+def test_engine_ticks_anchor_to_first_event_time():
+    engine = BacktestEngine(config=EngineConfig(tick_interval_ms=1000), broker=SimBroker(maker_fee_frac=0.0, taker_fee_frac=0.0))
+
+    events = [
+        DepthUpdate(
+            received_time_ns=0,
+            event_time_ms=1_500,
+            transaction_time_ms=1_500,
+            symbol="BTCUSDT",
+            first_update_id=1,
+            final_update_id=1,
+            prev_final_update_id=0,
+            bid_updates=[(99.0, 10.0)],
+            ask_updates=[(100.0, 10.0)],
+        ),
+        DepthUpdate(
+            received_time_ns=0,
+            event_time_ms=2_600,
+            transaction_time_ms=2_600,
+            symbol="BTCUSDT",
+            first_update_id=2,
+            final_update_id=2,
+            prev_final_update_id=1,
+            bid_updates=[(99.0, 10.0)],
+            ask_updates=[(100.0, 10.0)],
+        ),
+    ]
+
+    strat = _TickRecorder()
+    engine.run(events, strategy=strat)
+
+    assert strat.ticks == [1_500, 2_500, 3_500]
