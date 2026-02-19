@@ -160,6 +160,66 @@ class DepthChecks:
         self.spread.add(float(ask) - float(bid))
 
 
+@dataclass(slots=True)
+class CrossStreamChecks:
+    trade_total: int = 0
+    trade_eligible: int = 0
+    trade_outside_spread: int = 0
+    trade_skipped_no_book: int = 0
+    trade_skipped_stale: int = 0
+    trade_skipped_crossed: int = 0
+
+    mark_total: int = 0
+    mark_eligible: int = 0
+    mark_outside_mid_band: int = 0
+    mark_skipped_no_book: int = 0
+    mark_skipped_stale: int = 0
+    mark_skipped_crossed: int = 0
+
+    ticker_total: int = 0
+    ticker_eligible: int = 0
+    ticker_outside_mid_band: int = 0
+    ticker_skipped_no_book: int = 0
+    ticker_skipped_stale: int = 0
+    ticker_skipped_crossed: int = 0
+
+
+def _pct(num: int, den: int) -> float:
+    if den <= 0:
+        return 0.0
+    return (100.0 * float(num)) / float(den)
+
+
+def _book_state_for_check(
+    books: dict[str, L2Book],
+    last_depth_ms: dict[str, int],
+    *,
+    symbol: str,
+    now_ms: int,
+    fresh_book_ms: int,
+) -> tuple[float | None, float | None, str]:
+    book = books.get(symbol)
+    if book is None:
+        return None, None, "no_book"
+
+    bid = book.best_bid()
+    ask = book.best_ask()
+    if bid is None or ask is None:
+        return None, None, "no_book"
+
+    if float(bid) >= float(ask):
+        return bid, ask, "crossed"
+
+    if fresh_book_ms > 0:
+        t_depth = last_depth_ms.get(symbol)
+        if t_depth is None:
+            return bid, ask, "stale"
+        if int(now_ms) - int(t_depth) > int(fresh_book_ms):
+            return bid, ask, "stale"
+
+    return bid, ask, "ok"
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Temporal sanity-check of CryptoHFTData replay streams.")
     ap.add_argument("--dotenv", default=str(ROOT / ".env"))
@@ -172,6 +232,30 @@ def main() -> int:
     ap.add_argument("--include-open-interest", action="store_true")
     ap.add_argument("--include-liquidations", action="store_true")
     ap.add_argument("--open-interest-delay-ms", type=int, default=0, help="Delay (ms) to apply to open_interest availability time.")
+    ap.add_argument(
+        "--open-interest-alignment",
+        choices=["fixed_delay", "causal_asof"],
+        default="fixed_delay",
+        help="How to place open_interest on the replay timeline.",
+    )
+    ap.add_argument(
+        "--open-interest-availability-quantile",
+        type=float,
+        default=0.8,
+        help="Quantile in [0,1] used by causal_asof to estimate OI availability delay.",
+    )
+    ap.add_argument(
+        "--open-interest-min-delay-ms",
+        type=int,
+        default=0,
+        help="Lower bound for effective OI delay (ms).",
+    )
+    ap.add_argument(
+        "--open-interest-max-delay-ms",
+        type=int,
+        default=None,
+        help="Upper bound for effective OI delay (ms).",
+    )
     ap.add_argument("--skip-missing", action="store_true")
     ap.add_argument("--start-utc", default=None)
     ap.add_argument("--end-utc", default=None)
@@ -179,6 +263,18 @@ def main() -> int:
     ap.add_argument("--end-ms", type=int, default=None)
     ap.add_argument("--max-events", type=int, default=0, help="0 = no limit")
     ap.add_argument("--book-check-every", type=int, default=500, help="Check bid/ask/spread every N depth updates")
+    ap.add_argument(
+        "--cross-check-fresh-book-ms",
+        type=int,
+        default=250,
+        help="Only compare trade/mark/ticker against book when last depth is <= N ms old (0 disables freshness filter).",
+    )
+    ap.add_argument(
+        "--cross-check-mid-band-bps",
+        type=float,
+        default=30.0,
+        help="For mark/ticker validation, require value within +/- N bps around mid-price.",
+    )
     args = ap.parse_args()
 
     env = load_dotenv(args.dotenv, override=False).values
@@ -228,6 +324,12 @@ def main() -> int:
             include_open_interest=args.include_open_interest,
             include_liquidations=args.include_liquidations,
             open_interest_delay_ms=int(args.open_interest_delay_ms or 0),
+            open_interest_alignment_mode=str(args.open_interest_alignment),  # type: ignore[arg-type]
+            open_interest_availability_quantile=float(args.open_interest_availability_quantile),
+            open_interest_min_delay_ms=int(args.open_interest_min_delay_ms or 0),
+            open_interest_max_delay_ms=(
+                None if args.open_interest_max_delay_ms is None else int(args.open_interest_max_delay_ms)
+            ),
             orderbook_hours=hours,
             orderbook_skip_missing=True,
             skip_missing_daily_files=args.skip_missing,
@@ -247,6 +349,16 @@ def main() -> int:
     oi_ingest_latency_ms = RunningFloatStats()
 
     books: dict[str, L2Book] = {}
+    last_depth_event_ms: dict[str, int] = {}
+    cross = CrossStreamChecks()
+    fresh_book_ms = int(args.cross_check_fresh_book_ms or 0)
+    if fresh_book_ms < 0:
+        print("ERROR: --cross-check-fresh-book-ms must be >= 0", file=sys.stderr)
+        return 2
+    mid_band_bps = float(args.cross_check_mid_band_bps)
+    if mid_band_bps < 0.0:
+        print("ERROR: --cross-check-mid-band-bps must be >= 0", file=sys.stderr)
+        return 2
 
     def _stype(ev) -> str:
         if isinstance(ev, DepthUpdate):
@@ -289,12 +401,82 @@ def main() -> int:
                 book = L2Book()
                 books[ev.symbol] = book
             book.apply_depth_update(ev.bid_updates, ev.ask_updates)
+            last_depth_event_ms[ev.symbol] = int(ev.event_time_ms)
             if book_every and (depth_checks.depth_updates % book_every == 0):
                 depth_checks.on_book_check(book)
 
         if isinstance(ev, Trade):
             if int(ev.trade_time_ms) != int(ev.event_time_ms):
                 trade_time_mismatch += 1
+            cross.trade_total += 1
+            bid, ask, status = _book_state_for_check(
+                books,
+                last_depth_event_ms,
+                symbol=str(ev.symbol),
+                now_ms=int(ev.event_time_ms),
+                fresh_book_ms=fresh_book_ms,
+            )
+            if status == "no_book":
+                cross.trade_skipped_no_book += 1
+            elif status == "stale":
+                cross.trade_skipped_stale += 1
+            elif status == "crossed":
+                cross.trade_skipped_crossed += 1
+            else:
+                assert bid is not None and ask is not None
+                cross.trade_eligible += 1
+                px = float(ev.price)
+                if px < float(bid) or px > float(ask):
+                    cross.trade_outside_spread += 1
+
+        if isinstance(ev, MarkPrice):
+            cross.mark_total += 1
+            bid, ask, status = _book_state_for_check(
+                books,
+                last_depth_event_ms,
+                symbol=str(ev.symbol),
+                now_ms=int(ev.event_time_ms),
+                fresh_book_ms=fresh_book_ms,
+            )
+            if status == "no_book":
+                cross.mark_skipped_no_book += 1
+            elif status == "stale":
+                cross.mark_skipped_stale += 1
+            elif status == "crossed":
+                cross.mark_skipped_crossed += 1
+            else:
+                assert bid is not None and ask is not None
+                mid = (float(bid) + float(ask)) / 2.0
+                if mid > 0.0:
+                    band = mid * (mid_band_bps / 10_000.0)
+                    cross.mark_eligible += 1
+                    if abs(float(ev.mark_price) - mid) > band:
+                        cross.mark_outside_mid_band += 1
+
+        if isinstance(ev, Ticker):
+            cross.ticker_total += 1
+            bid, ask, status = _book_state_for_check(
+                books,
+                last_depth_event_ms,
+                symbol=str(ev.symbol),
+                now_ms=int(ev.event_time_ms),
+                fresh_book_ms=fresh_book_ms,
+            )
+            if status == "no_book":
+                cross.ticker_skipped_no_book += 1
+            elif status == "stale":
+                cross.ticker_skipped_stale += 1
+            elif status == "crossed":
+                cross.ticker_skipped_crossed += 1
+            else:
+                assert bid is not None and ask is not None
+                mid = (float(bid) + float(ask)) / 2.0
+                if mid > 0.0:
+                    band = mid * (mid_band_bps / 10_000.0)
+                    cross.ticker_eligible += 1
+                    if abs(float(ev.last_price) - mid) > band:
+                        cross.ticker_outside_mid_band += 1
+
         if isinstance(ev, OpenInterest):
             oi_publish_delay_ms.add(float(int(ev.event_time_ms) - int(ev.timestamp_ms)))
             oi_ingest_latency_ms.add(float(int(ev.received_time_ns) / 1_000_000.0 - int(ev.timestamp_ms)))
@@ -357,6 +539,28 @@ def main() -> int:
         print(
             f"ingest_latency_ms(min/mean/max)={oi_ingest_latency_ms.min_v}/{oi_ingest_latency_ms.mean()}/{oi_ingest_latency_ms.max_v}"
         )
+
+    print("\n== Cross-Stream Consistency ==")
+    print(f"book_fresh_ms: {fresh_book_ms}  mid_band_bps: {mid_band_bps}")
+
+    print(
+        "trade_vs_book: "
+        f"total={cross.trade_total} eligible={cross.trade_eligible} "
+        f"outside_spread={cross.trade_outside_spread} ({_pct(cross.trade_outside_spread, cross.trade_eligible):.4f}%) "
+        f"skipped(no_book/stale/crossed)={cross.trade_skipped_no_book}/{cross.trade_skipped_stale}/{cross.trade_skipped_crossed}"
+    )
+    print(
+        "mark_vs_mid_band: "
+        f"total={cross.mark_total} eligible={cross.mark_eligible} "
+        f"outside_band={cross.mark_outside_mid_band} ({_pct(cross.mark_outside_mid_band, cross.mark_eligible):.4f}%) "
+        f"skipped(no_book/stale/crossed)={cross.mark_skipped_no_book}/{cross.mark_skipped_stale}/{cross.mark_skipped_crossed}"
+    )
+    print(
+        "ticker_vs_mid_band: "
+        f"total={cross.ticker_total} eligible={cross.ticker_eligible} "
+        f"outside_band={cross.ticker_outside_mid_band} ({_pct(cross.ticker_outside_mid_band, cross.ticker_eligible):.4f}%) "
+        f"skipped(no_book/stale/crossed)={cross.ticker_skipped_no_book}/{cross.ticker_skipped_stale}/{cross.ticker_skipped_crossed}"
+    )
 
     return 0
 

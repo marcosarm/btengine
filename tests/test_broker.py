@@ -259,3 +259,110 @@ def test_broker_gtc_crossing_limit_partial_fill_leaves_remainder_resting():
     pos = broker.portfolio.positions["BTCUSDT"]
     assert abs(pos.qty - 5.0) < 1e-12
     assert abs(pos.avg_price - 100.4) < 1e-12
+
+
+def test_broker_cancel_then_reuse_order_id_with_submit_latency_works():
+    book = L2Book()
+    book.apply_depth_update(bid_updates=[(100.0, 1.0)], ask_updates=[(101.0, 1.0)])
+
+    broker = SimBroker(maker_fee_frac=0.0, taker_fee_frac=0.0, submit_latency_ms=100)
+
+    broker.submit(
+        Order(
+            id="x",
+            symbol="BTCUSDT",
+            side="buy",
+            order_type="limit",
+            quantity=1.0,
+            price=100.0,
+            post_only=True,
+        ),
+        book,
+        now_ms=0,
+    )
+    broker.on_time(100)
+    broker.cancel("x")
+
+    broker.submit(
+        Order(
+            id="x",
+            symbol="BTCUSDT",
+            side="buy",
+            order_type="limit",
+            quantity=1.0,
+            price=100.0,
+            post_only=True,
+        ),
+        book,
+        now_ms=200,
+    )
+    broker.on_time(300)
+    broker.on_trade(
+        Trade(
+            received_time_ns=0,
+            event_time_ms=300,
+            trade_time_ms=300,
+            symbol="BTCUSDT",
+            trade_id=10,
+            price=100.0,
+            quantity=10.0,
+            is_buyer_maker=True,
+        ),
+        now_ms=300,
+    )
+
+    assert len(broker.fills) == 1
+    assert broker.fills[0].order_id == "x"
+    assert abs(broker.fills[0].quantity - 1.0) < 1e-12
+
+
+def test_broker_shared_trade_budget_for_own_makers_at_same_level():
+    book = L2Book()
+    book.apply_depth_update(bid_updates=[], ask_updates=[(101.0, 1.0)])
+
+    broker = SimBroker(maker_fee_frac=0.0, taker_fee_frac=0.0)
+    broker.submit(
+        Order(
+            id="a",
+            symbol="BTCUSDT",
+            side="buy",
+            order_type="limit",
+            quantity=1.0,
+            price=100.0,
+            post_only=True,
+        ),
+        book,
+        now_ms=0,
+    )
+    broker.submit(
+        Order(
+            id="b",
+            symbol="BTCUSDT",
+            side="buy",
+            order_type="limit",
+            quantity=1.0,
+            price=100.0,
+            post_only=True,
+        ),
+        book,
+        now_ms=0,
+    )
+
+    broker.on_trade(
+        Trade(
+            received_time_ns=0,
+            event_time_ms=0,
+            trade_time_ms=0,
+            symbol="BTCUSDT",
+            trade_id=1,
+            price=100.0,
+            quantity=1.0,
+            is_buyer_maker=True,
+        ),
+        now_ms=0,
+    )
+
+    assert len(broker.fills) == 1
+    assert broker.fills[0].order_id == "a"
+    assert abs(broker.fills[0].quantity - 1.0) < 1e-12
+    assert broker.has_open_orders()

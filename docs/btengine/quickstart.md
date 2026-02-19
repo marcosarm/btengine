@@ -90,7 +90,21 @@ Useful guard knobs:
 - `--strict-book-cooldown-ms`
 - `--strict-book-warmup-depth-updates`
 
-## 4e) Strategy examples (external)
+## 4e) OI anti-lookahead preset (recommended)
+
+Use this profile when your strategy consumes `open_interest`:
+
+```bash
+python scripts\\run_backtest_replay.py --day 2025-07-01 --symbols BTCUSDT --mark-price-symbols BTCUSDT --hours 12-12 --include-ticker --include-open-interest --include-liquidations --strict-book --open-interest-alignment causal_asof --open-interest-availability-quantile 0.5 --open-interest-min-delay-ms 5000 --open-interest-max-delay-ms 300000
+```
+
+Deterministic equivalent:
+
+```bash
+python scripts\\run_backtest_replay.py --day 2025-07-01 --symbols BTCUSDT --mark-price-symbols BTCUSDT --hours 12-12 --include-ticker --include-open-interest --include-liquidations --strict-book --open-interest-alignment fixed_delay --open-interest-delay-ms 300000
+```
+
+## 4f) Strategy examples (external)
 
 Full strategies live in consumer repos, not in btengine.
 Example: `C:\\4mti\\Projetos\\tbot_funding_arb`.

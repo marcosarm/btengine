@@ -1,5 +1,7 @@
 import math
+import builtins
 
+from btengine.execution.taker import simulate_taker_fill
 from btengine.marketdata import L2Book
 
 
@@ -39,3 +41,32 @@ def test_impact_vwap_retries_with_full_depth_when_max_levels_limits():
     vwap = book.impact_vwap("buy", 150.0, max_levels=1)
     assert not math.isnan(vwap)
     assert abs(vwap - (150.0 / (1.0 + 50.0 / 101.0))) < 1e-9
+
+
+def test_simulate_taker_fill_does_not_use_global_sorted(monkeypatch):
+    book = L2Book()
+    book.apply_depth_update(bid_updates=[(99.0, 1.0)], ask_updates=[(100.0, 1.0), (101.0, 1.0)])
+
+    def _fail_sorted(*args, **kwargs):
+        raise AssertionError("simulate_taker_fill should not call sorted()")
+
+    monkeypatch.setattr(builtins, "sorted", _fail_sorted)
+
+    avg, qty = simulate_taker_fill(book, side="buy", quantity=1.5)
+    assert abs(qty - 1.5) < 1e-12
+    assert abs(avg - (100.0 * 1.0 + 101.0 * 0.5) / 1.5) < 1e-12
+
+
+def test_orderbook_repeated_level_updates_do_not_duplicate_heap_entries():
+    book = L2Book()
+
+    for _ in range(10_000):
+        book.apply_level("ask", 101.0, 1.0)
+    assert len(book._ask_heap) == 1
+
+    # Remove and re-add the same level repeatedly.
+    for _ in range(1_000):
+        book.apply_level("ask", 101.0, 0.0)
+        book.apply_level("ask", 101.0, 1.0)
+    assert len(book._ask_heap) == 1
+    assert book.best_ask() == 101.0

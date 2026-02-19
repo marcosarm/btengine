@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from btengine.analytics import max_drawdown, round_trips_from_fills, summarize_round_trips
+from btengine.book_guard import BookGuardConfig
 from btengine.broker import SimBroker
 from btengine.data.cryptohftdata import CryptoHftDayConfig, CryptoHftLayout, S3Config, build_day_stream, make_s3_filesystem
 from btengine.engine import BacktestEngine, EngineConfig, EngineContext
@@ -166,6 +167,20 @@ def main() -> int:
     ap.add_argument("--include-open-interest", action="store_true")
     ap.add_argument("--include-liquidations", action="store_true")
     ap.add_argument("--open-interest-delay-ms", type=int, default=0)
+    ap.add_argument(
+        "--open-interest-alignment",
+        choices=["fixed_delay", "causal_asof"],
+        default="fixed_delay",
+        help="How to place open_interest on the replay timeline.",
+    )
+    ap.add_argument(
+        "--open-interest-availability-quantile",
+        type=float,
+        default=0.8,
+        help="Quantile in [0,1] used by causal_asof to estimate OI availability delay.",
+    )
+    ap.add_argument("--open-interest-min-delay-ms", type=int, default=0, help="Lower bound for effective OI delay (ms).")
+    ap.add_argument("--open-interest-max-delay-ms", type=int, default=None, help="Upper bound for effective OI delay (ms).")
     ap.add_argument("--skip-missing", action="store_true")
 
     ap.add_argument("--direction", choices=["long", "short"], default="long")
@@ -189,6 +204,19 @@ def main() -> int:
     ap.add_argument("--taker-fee-frac", type=float, default=0.0005)
     ap.add_argument("--submit-latency-ms", type=int, default=0)
     ap.add_argument("--cancel-latency-ms", type=int, default=0)
+    ap.add_argument("--strict-book", action="store_true", help="Block submits on stale/crossed/invalid book.")
+    ap.add_argument("--strict-book-max-staleness-ms", type=int, default=250, help="Block submits when latest depth is older than N ms.")
+    ap.add_argument("--strict-book-max-spread", type=float, default=None, help="Optional max absolute spread.")
+    ap.add_argument("--strict-book-max-spread-bps", type=float, default=5.0, help="Optional max spread in bps.")
+    ap.add_argument("--strict-book-cooldown-ms", type=int, default=1_000, help="Block submits for N ms after guard trip.")
+    ap.add_argument("--strict-book-warmup-depth-updates", type=int, default=1_000, help="Block submits for N depth updates after guard trip.")
+    ap.add_argument("--strict-book-reset-on-mismatch", action="store_true", default=True)
+    ap.add_argument("--strict-book-no-reset-on-mismatch", dest="strict_book_reset_on_mismatch", action="store_false")
+    ap.add_argument("--strict-book-reset-on-crossed", action="store_true", default=True)
+    ap.add_argument("--strict-book-no-reset-on-crossed", dest="strict_book_reset_on_crossed", action="store_false")
+    ap.add_argument("--strict-book-reset-on-missing-side", action="store_true", default=False)
+    ap.add_argument("--strict-book-reset-on-spread", action="store_true", default=False)
+    ap.add_argument("--strict-book-reset-on-stale", action="store_true", default=False)
 
     ap.add_argument("--out-fills-csv", default=None)
     ap.add_argument("--out-equity-csv", default=None)
@@ -250,6 +278,10 @@ def main() -> int:
         include_open_interest=bool(args.include_open_interest),
         include_liquidations=bool(args.include_liquidations),
         open_interest_delay_ms=int(args.open_interest_delay_ms or 0),
+        open_interest_alignment_mode=str(args.open_interest_alignment),  # type: ignore[arg-type]
+        open_interest_availability_quantile=float(args.open_interest_availability_quantile),
+        open_interest_min_delay_ms=int(args.open_interest_min_delay_ms or 0),
+        open_interest_max_delay_ms=(None if args.open_interest_max_delay_ms is None else int(args.open_interest_max_delay_ms)),
         orderbook_hours=hours,
         orderbook_skip_missing=True,
         skip_missing_daily_files=bool(args.skip_missing),
@@ -275,7 +307,29 @@ def main() -> int:
         submit_latency_ms=int(args.submit_latency_ms),
         cancel_latency_ms=int(args.cancel_latency_ms),
     )
-    engine = BacktestEngine(config=EngineConfig(tick_interval_ms=int(args.tick_ms)), broker=broker)
+    guard_cfg = None
+    if args.strict_book:
+        guard_cfg = BookGuardConfig(
+            enabled=True,
+            max_spread=args.strict_book_max_spread,
+            max_spread_bps=args.strict_book_max_spread_bps,
+            max_staleness_ms=int(args.strict_book_max_staleness_ms or 0),
+            cooldown_ms=int(args.strict_book_cooldown_ms or 0),
+            warmup_depth_updates=int(args.strict_book_warmup_depth_updates or 0),
+            reset_on_mismatch=bool(args.strict_book_reset_on_mismatch),
+            reset_on_crossed=bool(args.strict_book_reset_on_crossed),
+            reset_on_missing_side=bool(args.strict_book_reset_on_missing_side),
+            reset_on_spread=bool(args.strict_book_reset_on_spread),
+            reset_on_stale=bool(args.strict_book_reset_on_stale),
+        )
+    engine = BacktestEngine(
+        config=EngineConfig(
+            tick_interval_ms=int(args.tick_ms),
+            book_guard=guard_cfg,
+            book_guard_symbol=str(args.symbol),
+        ),
+        broker=broker,
+    )
 
     strat = EntryExitStrategy(
         symbol=str(args.symbol),

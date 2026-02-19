@@ -21,6 +21,6 @@ class Order:
     price: float | None = None
     time_in_force: TimeInForce = "GTC"
     post_only: bool = False
+    reduce_only: bool = False
 
     created_time_ms: int = 0
-

@@ -82,3 +82,20 @@ def test_merge_event_streams_tie_breaker_prefers_received_time_when_available():
         (1_000, "s2_early_recv"),
         (1_000, "s1_late_recv"),
     ]
+
+
+@dataclass(frozen=True)
+class _EvNoRecvWithId:
+    event_time_ms: int
+    final_update_id: int
+    tag: str
+
+
+def test_merge_event_streams_tie_breaker_uses_event_metadata_without_received_time():
+    s1 = [_EvNoRecvWithId(1_000, 200, "s1_late_id")]
+    s2 = [_EvNoRecvWithId(1_000, 100, "s2_early_id")]
+    out = list(merge_event_streams(s1, s2))
+    assert [(e.event_time_ms, e.tag) for e in out] == [
+        (1_000, "s2_early_id"),
+        (1_000, "s1_late_id"),
+    ]

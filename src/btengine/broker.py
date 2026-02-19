@@ -50,7 +50,7 @@ class SimBroker:
     _pending_submits: list[tuple[int, int, Order, L2Book]] = field(default_factory=list, init=False, repr=False)
     _pending_cancels: list[tuple[int, int, str]] = field(default_factory=list, init=False, repr=False)
     _seq: int = field(default=0, init=False, repr=False)
-    _canceled: set[str] = field(default_factory=set, init=False, repr=False)
+    _maker_seq: int = field(default=0, init=False, repr=False)
 
     def on_time(self, now_ms: int) -> None:
         """Advance broker time and process any pending submissions/cancels."""
@@ -65,9 +65,6 @@ class SimBroker:
 
         while self._pending_submits and self._pending_submits[0][0] <= now:
             _, _, order, book = heapq.heappop(self._pending_submits)
-            if order.id in self._canceled:
-                self._canceled.discard(order.id)
-                continue
             self._submit_now(order, book, now)
 
     def submit(self, order: Order, book: L2Book, now_ms: int) -> None:
@@ -163,7 +160,9 @@ class SimBroker:
             quantity=float(order.quantity),
             queue_ahead_qty=q_ahead,
             trade_participation=float(self.maker_trade_participation),
+            priority_seq=int(self._maker_seq),
         )
+        self._maker_seq += 1
 
     def _fill_taker(self, order: Order, book: L2Book, now_ms: int, *, limit_price: float | None) -> tuple[float, float]:
         avg_px, filled_qty = consume_taker_fill(
@@ -211,28 +210,43 @@ class SimBroker:
                 self._maker_orders.pop(order_id, None)
 
     def on_trade(self, trade: Trade, now_ms: int) -> None:
+        # Group orders by side/price so multiple own orders at the same level
+        # share the same trade-volume budget deterministically.
+        grouped: dict[tuple[str, float], list[tuple[str, MakerQueueOrder]]] = {}
         for order_id, mo in list(self._maker_orders.items()):
-            fill_qty = mo.on_trade(trade)
-            if fill_qty <= 0.0:
+            if mo.symbol != trade.symbol:
                 continue
+            grouped.setdefault((mo.side, float(mo.price)), []).append((order_id, mo))
 
-            fee = fill_qty * trade.price * self.maker_fee_frac
-            self.portfolio.apply_fill(mo.symbol, mo.side, fill_qty, trade.price, fee_usdt=fee)
-            self.fills.append(
-                Fill(
-                    order_id=order_id,
-                    symbol=mo.symbol,
-                    side=mo.side,
-                    quantity=fill_qty,
-                    price=trade.price,
-                    fee_usdt=fee,
-                    event_time_ms=now_ms,
-                    liquidity="maker",
+        for _, items in grouped.items():
+            remaining_trade_qty = float(trade.quantity)
+            items.sort(key=lambda x: int(x[1].priority_seq))
+            for order_id, mo in items:
+                if remaining_trade_qty <= 0.0:
+                    break
+                fill_qty, consumed_qty = mo.on_trade_budgeted(trade, max_trade_qty=remaining_trade_qty)
+                if consumed_qty > 0.0:
+                    remaining_trade_qty = max(0.0, remaining_trade_qty - float(consumed_qty))
+                if fill_qty <= 0.0:
+                    continue
+
+                fee = fill_qty * trade.price * self.maker_fee_frac
+                self.portfolio.apply_fill(mo.symbol, mo.side, fill_qty, trade.price, fee_usdt=fee)
+                self.fills.append(
+                    Fill(
+                        order_id=order_id,
+                        symbol=mo.symbol,
+                        side=mo.side,
+                        quantity=fill_qty,
+                        price=trade.price,
+                        fee_usdt=fee,
+                        event_time_ms=now_ms,
+                        liquidity="maker",
+                    )
                 )
-            )
 
-            if mo.is_filled():
-                self._maker_orders.pop(order_id, None)
+                if mo.is_filled():
+                    self._maker_orders.pop(order_id, None)
 
     def cancel(self, order_id: str, *, now_ms: int | None = None) -> None:
         """Cancel an open maker order.
@@ -251,8 +265,16 @@ class SimBroker:
 
     def _cancel_now(self, order_id: str) -> None:
         self._maker_orders.pop(order_id, None)
-        # Also cancel an order that has been submitted but not yet activated.
-        self._canceled.add(order_id)
+        # Also cancel any order that has been submitted but not yet activated.
+        self._drop_pending_submits(order_id)
+
+    def _drop_pending_submits(self, order_id: str) -> None:
+        if not self._pending_submits:
+            return
+        n0 = len(self._pending_submits)
+        self._pending_submits = [x for x in self._pending_submits if x[2].id != order_id]
+        if len(self._pending_submits) != n0:
+            heapq.heapify(self._pending_submits)
 
     def has_open_orders(self) -> bool:
         return bool(self._maker_orders)

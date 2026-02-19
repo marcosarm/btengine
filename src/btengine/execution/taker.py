@@ -26,11 +26,27 @@ def simulate_taker_fill(
         raise ValueError("quantity must be > 0")
 
     if side == "buy":
-        levels = sorted(book.asks.items(), key=lambda x: x[0])
+        price_heap = [float(p) for p, q in book.asks.items() if float(q) > 0.0]
+        heapq.heapify(price_heap)
+        side_map = book.asks
+
+        def next_price() -> float | None:
+            if not price_heap:
+                return None
+            return float(heapq.heappop(price_heap))
+
         def crosses(p: float) -> bool:
             return limit_price is not None and p > limit_price
     elif side == "sell":
-        levels = sorted(book.bids.items(), key=lambda x: x[0], reverse=True)
+        price_heap = [-float(p) for p, q in book.bids.items() if float(q) > 0.0]
+        heapq.heapify(price_heap)
+        side_map = book.bids
+
+        def next_price() -> float | None:
+            if not price_heap:
+                return None
+            return -float(heapq.heappop(price_heap))
+
         def crosses(p: float) -> bool:
             return limit_price is not None and p < limit_price
     else:
@@ -40,7 +56,11 @@ def simulate_taker_fill(
     filled = 0.0
     cost = 0.0
 
-    for price, lvl_qty in levels:
+    while remaining > 0.0:
+        price = next_price()
+        if price is None:
+            break
+        lvl_qty = float(side_map.get(float(price), 0.0))
         if remaining <= 0:
             break
         if lvl_qty <= 0:
@@ -90,10 +110,7 @@ def consume_taker_fill(
 
         best_level = book.best_ask
         side_map = book.asks
-        heap = book._ask_heap
-
-        def heap_price(p: float) -> float:
-            return p
+        book_side = "ask"
 
     elif side == "sell":
         def crosses(p: float) -> bool:
@@ -101,10 +118,7 @@ def consume_taker_fill(
 
         best_level = book.best_bid
         side_map = book.bids
-        heap = book._bid_heap
-
-        def heap_price(p: float) -> float:
-            return -p
+        book_side = "bid"
 
     else:
         raise ValueError(f"invalid side: {side!r}")
@@ -128,10 +142,9 @@ def consume_taker_fill(
 
         new_qty = float(lvl_qty) - float(take)
         if new_qty <= eps_qty:
-            side_map.pop(float(price), None)
+            book.apply_level(book_side, float(price), 0.0)
         else:
-            side_map[float(price)] = new_qty
-            heapq.heappush(heap, heap_price(float(price)))
+            book.apply_level(book_side, float(price), new_qty)
 
     if filled <= 0:
         return math.nan, 0.0

@@ -13,10 +13,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from btengine.analytics import max_drawdown, round_trips_from_fills, summarize_round_trips
+from btengine.book_guard import BookGuardConfig, BookGuardStats, BookGuardedBroker
 from btengine.broker import SimBroker
 from btengine.data.cryptohftdata import CryptoHftDayConfig, CryptoHftLayout, S3Config, build_day_stream, make_s3_filesystem
 from btengine.engine import BacktestEngine, EngineConfig, EngineContext
-from btengine.marketdata import L2Book
 from btengine.types import DepthUpdate, Liquidation, MarkPrice, OpenInterest, Ticker, Trade
 from btengine.util import load_dotenv
 
@@ -130,191 +130,6 @@ class EventCounters:
     ticker: int = 0
     open_interest: int = 0
     liquidations: int = 0
-
-
-def _reset_book_in_place(book: L2Book) -> None:
-    # Clear best bid/ask heaps too; otherwise best_* may pop many stale entries.
-    book.bids.clear()
-    book.asks.clear()
-    book._bid_heap.clear()  # type: ignore[attr-defined]
-    book._ask_heap.clear()  # type: ignore[attr-defined]
-
-
-@dataclass(slots=True)
-class BookGuardConfig:
-    enabled: bool = False
-    max_spread: float | None = None
-    max_spread_bps: float | None = 5.0
-    cooldown_ms: int = 1_000
-    warmup_depth_updates: int = 1_000
-    max_staleness_ms: int = 2_000
-    reset_on_mismatch: bool = True
-    reset_on_crossed: bool = True
-    reset_on_missing_side: bool = False
-    reset_on_spread: bool = False
-    reset_on_stale: bool = False
-
-
-@dataclass(slots=True)
-class BookGuardStats:
-    resets: int = 0
-    mismatch_trips: int = 0
-    cross_trips: int = 0
-    missing_side_trips: int = 0
-    spread_trips: int = 0
-    stale_trips: int = 0
-
-    blocked_submits: int = 0
-    blocked_submit_reason: dict[str, int] = None  # type: ignore[assignment]
-
-    def __post_init__(self) -> None:
-        self.blocked_submit_reason = {}
-
-
-class BookGuardedBroker:
-    """SimBroker wrapper that blocks order submits when the book is invalid.
-
-    It also detects orderbook continuity breaks (prev_final_update_id mismatch)
-    and can reset the in-memory L2Book + enforce a warmup period.
-    """
-
-    def __init__(self, inner: SimBroker, *, symbol: str, cfg: BookGuardConfig) -> None:
-        self.inner = inner
-        self.symbol = str(symbol)
-        self.cfg = cfg
-        self.stats = BookGuardStats()
-
-        self._blocked_until_ms: int = 0
-        self._warmup_remaining: int = 0
-        self._last_final_update_id: int | None = None
-        self._last_depth_event_ms: int | None = None
-
-    @property
-    def portfolio(self):
-        return self.inner.portfolio
-
-    @property
-    def fills(self):
-        return self.inner.fills
-
-    def has_open_orders(self) -> bool:
-        return self.inner.has_open_orders()
-
-    def on_time(self, now_ms: int) -> None:
-        return self.inner.on_time(now_ms)
-
-    def cancel(self, order_id: str, *, now_ms: int | None = None) -> None:
-        return self.inner.cancel(order_id, now_ms=now_ms)
-
-    def on_trade(self, trade: Trade, now_ms: int) -> None:
-        return self.inner.on_trade(trade, now_ms=now_ms)
-
-    def _trip(self, book: L2Book, *, now_ms: int, reason: str) -> None:
-        if int(self.cfg.cooldown_ms or 0) > 0:
-            self._blocked_until_ms = max(self._blocked_until_ms, int(now_ms) + int(self.cfg.cooldown_ms))
-        if int(self.cfg.warmup_depth_updates or 0) > 0:
-            self._warmup_remaining = max(self._warmup_remaining, int(self.cfg.warmup_depth_updates))
-
-        reset = False
-        if reason == "mismatch":
-            reset = bool(self.cfg.reset_on_mismatch)
-        elif reason == "crossed":
-            reset = bool(self.cfg.reset_on_crossed)
-        elif reason == "missing_side":
-            reset = bool(self.cfg.reset_on_missing_side)
-        elif reason == "spread":
-            reset = bool(self.cfg.reset_on_spread)
-        elif reason == "stale":
-            reset = bool(self.cfg.reset_on_stale)
-
-        if reset:
-            _reset_book_in_place(book)
-            # Also clear maker orders, which depend on queue state at a specific price level.
-            # This is conservative and avoids carrying state across a book reset.
-            try:
-                self.inner._maker_orders.clear()  # type: ignore[attr-defined]
-            except Exception:
-                pass
-            self.stats.resets += 1
-
-    def on_depth_update(self, update: DepthUpdate, book: L2Book) -> None:
-        if self.cfg.enabled and update.symbol == self.symbol:
-            self._last_depth_event_ms = int(update.event_time_ms)
-            if self._warmup_remaining > 0:
-                self._warmup_remaining -= 1
-
-            # Detect continuity mismatch before applying the delta.
-            if self._last_final_update_id is not None and int(update.prev_final_update_id) != int(self._last_final_update_id):
-                self.stats.mismatch_trips += 1
-                self._trip(book, now_ms=int(update.event_time_ms), reason="mismatch")
-
-            self._last_final_update_id = int(update.final_update_id)
-
-        return self.inner.on_depth_update(update, book)
-
-    def submit(self, order, book: L2Book, now_ms: int) -> None:
-        if not self.cfg.enabled or order.symbol != self.symbol:
-            return self.inner.submit(order, book, now_ms)
-
-        now = int(now_ms)
-        if now < int(self._blocked_until_ms):
-            self.stats.blocked_submits += 1
-            self.stats.blocked_submit_reason["cooldown"] = self.stats.blocked_submit_reason.get("cooldown", 0) + 1
-            return
-        if int(self._warmup_remaining) > 0:
-            self.stats.blocked_submits += 1
-            self.stats.blocked_submit_reason["warmup"] = self.stats.blocked_submit_reason.get("warmup", 0) + 1
-            return
-
-        if int(self.cfg.max_staleness_ms or 0) > 0:
-            last_depth_ms = self._last_depth_event_ms
-            if last_depth_ms is None or (now - int(last_depth_ms)) > int(self.cfg.max_staleness_ms):
-                self.stats.blocked_submits += 1
-                self.stats.blocked_submit_reason["stale"] = self.stats.blocked_submit_reason.get("stale", 0) + 1
-                self.stats.stale_trips += 1
-                self._trip(book, now_ms=now, reason="stale")
-                return
-
-        bid = book.best_bid()
-        ask = book.best_ask()
-        if bid is None or ask is None:
-            self.stats.blocked_submits += 1
-            self.stats.blocked_submit_reason["missing_side"] = self.stats.blocked_submit_reason.get("missing_side", 0) + 1
-            self.stats.missing_side_trips += 1
-            self._trip(book, now_ms=now, reason="missing_side")
-            return
-
-        if float(bid) >= float(ask):
-            self.stats.blocked_submits += 1
-            self.stats.blocked_submit_reason["crossed"] = self.stats.blocked_submit_reason.get("crossed", 0) + 1
-            self.stats.cross_trips += 1
-            self._trip(book, now_ms=now, reason="crossed")
-            return
-
-        spread = float(ask) - float(bid)
-        if self.cfg.max_spread is not None and spread > float(self.cfg.max_spread):
-            self.stats.blocked_submits += 1
-            self.stats.blocked_submit_reason["spread"] = self.stats.blocked_submit_reason.get("spread", 0) + 1
-            self.stats.spread_trips += 1
-            self._trip(book, now_ms=now, reason="spread")
-            return
-
-        if self.cfg.max_spread_bps is not None:
-            mid = (float(ask) + float(bid)) / 2.0
-            if mid > 0.0:
-                spread_bps = (spread / mid) * 10_000.0
-                if spread_bps > float(self.cfg.max_spread_bps):
-                    self.stats.blocked_submits += 1
-                    self.stats.blocked_submit_reason["spread"] = self.stats.blocked_submit_reason.get("spread", 0) + 1
-                    self.stats.spread_trips += 1
-                    self._trip(book, now_ms=now, reason="spread")
-                    return
-
-        return self.inner.submit(order, book, now_ms)
-
-    def __getattr__(self, name: str):
-        # Delegate any other methods/attrs to the underlying SimBroker.
-        return getattr(self.inner, name)
 
 
 class ValidatingStrategy:
@@ -435,7 +250,7 @@ def main() -> int:
     ap.add_argument("--strict-book", action="store_true", help="Guard submits when the book is invalid; reset/warmup on mismatches/crossed book.")
     ap.add_argument("--strict-book-max-spread", type=float, default=None, help="Optional max spread (abs) to allow trading.")
     ap.add_argument("--strict-book-max-spread-bps", type=float, default=5.0, help="Optional max spread in bps to allow trading (default: 5 bps).")
-    ap.add_argument("--strict-book-max-staleness-ms", type=int, default=2_000, help="Block submits when latest depth update is older than N ms.")
+    ap.add_argument("--strict-book-max-staleness-ms", type=int, default=500, help="Block submits when latest depth update is older than N ms.")
     ap.add_argument("--strict-book-cooldown-ms", type=int, default=1_000, help="Block submits for N ms after a guard trip.")
     ap.add_argument("--strict-book-warmup-depth-updates", type=int, default=1_000, help="Block submits for N depth updates after a guard trip.")
     ap.add_argument("--strict-book-reset-on-mismatch", action="store_true", default=True, help="Reset L2Book on prev_final_update_id mismatches.")
@@ -456,6 +271,20 @@ def main() -> int:
     ap.add_argument("--include-open-interest", action="store_true")
     ap.add_argument("--include-liquidations", action="store_true")
     ap.add_argument("--open-interest-delay-ms", type=int, default=0)
+    ap.add_argument(
+        "--open-interest-alignment",
+        choices=["fixed_delay", "causal_asof"],
+        default="fixed_delay",
+        help="How to place open_interest on the replay timeline.",
+    )
+    ap.add_argument(
+        "--open-interest-availability-quantile",
+        type=float,
+        default=0.8,
+        help="Quantile in [0,1] used by causal_asof to estimate OI availability delay.",
+    )
+    ap.add_argument("--open-interest-min-delay-ms", type=int, default=0, help="Lower bound for effective OI delay (ms).")
+    ap.add_argument("--open-interest-max-delay-ms", type=int, default=None, help="Upper bound for effective OI delay (ms).")
     ap.add_argument("--skip-missing", action="store_true")
 
     # entry_exit params.
@@ -583,6 +412,12 @@ def main() -> int:
                 include_open_interest=bool(args.include_open_interest),
                 include_liquidations=bool(args.include_liquidations),
                 open_interest_delay_ms=int(args.open_interest_delay_ms or 0),
+                open_interest_alignment_mode=str(args.open_interest_alignment),  # type: ignore[arg-type]
+                open_interest_availability_quantile=float(args.open_interest_availability_quantile),
+                open_interest_min_delay_ms=int(args.open_interest_min_delay_ms or 0),
+                open_interest_max_delay_ms=(
+                    None if args.open_interest_max_delay_ms is None else int(args.open_interest_max_delay_ms)
+                ),
                 orderbook_hours=hours,
                 orderbook_skip_missing=False,  # fail-fast for missing hours (validation)
                 skip_missing_daily_files=bool(args.skip_missing),

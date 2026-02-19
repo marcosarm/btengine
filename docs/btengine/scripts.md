@@ -75,6 +75,21 @@ Execution knobs (for strategies that submit orders):
 
 Data knobs (anti-lookahead):
 - `--open-interest-delay-ms`
+- `--open-interest-alignment` (`fixed_delay` or `causal_asof`)
+- `--open-interest-availability-quantile`
+- `--open-interest-min-delay-ms`
+- `--open-interest-max-delay-ms`
+
+Recommended OI preset for realism:
+
+```bash
+python scripts\\run_backtest_replay.py --day 2025-07-01 --symbols BTCUSDT --mark-price-symbols BTCUSDT --hours 12-12 --include-ticker --include-open-interest --include-liquidations --strict-book --open-interest-alignment causal_asof --open-interest-availability-quantile 0.5 --open-interest-min-delay-ms 5000 --open-interest-max-delay-ms 300000
+```
+
+Notes:
+- `causal_asof` avoids direct lookahead from `timestamp`.
+- `max-delay=300000` (5 min) avoids excessively stale OI snapshots in this dataset.
+- deterministic equivalent: `--open-interest-alignment fixed_delay --open-interest-delay-ms 300000`.
 
 ## `run_backtest_entry_exit.py`
 
@@ -163,6 +178,12 @@ To simulate open interest delay:
 
 ```bash
 python scripts\\analyze_replay_temporal.py --day 2025-07-01 --symbols BTCUSDT --hours 12-12 --include-open-interest --open-interest-delay-ms 5000
+```
+
+Recommended temporal check with the same OI preset:
+
+```bash
+python scripts\\analyze_replay_temporal.py --day 2025-07-01 --symbols BTCUSDT --mark-price-symbols BTCUSDT --hours 12-12 --include-ticker --include-open-interest --include-liquidations --open-interest-alignment causal_asof --open-interest-availability-quantile 0.5 --open-interest-min-delay-ms 5000 --open-interest-max-delay-ms 300000 --cross-check-fresh-book-ms 250 --cross-check-mid-band-bps 30 --book-check-every 5000 --max-events 0
 ```
 
 Optionally control the window explicitly:

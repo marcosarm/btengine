@@ -5,12 +5,16 @@ adapters live under `btengine.data.*`.
 """
 
 from .engine import BacktestEngine, EngineConfig, Strategy
+from .book_guard import BookGuardConfig, BookGuardStats, BookGuardedBroker
 from .types import DepthUpdate, Liquidation, MarkPrice, OpenInterest, Side, Ticker, Trade
 
 __all__ = [
     "BacktestEngine",
     "EngineConfig",
     "Strategy",
+    "BookGuardConfig",
+    "BookGuardStats",
+    "BookGuardedBroker",
     "DepthUpdate",
     "Trade",
     "MarkPrice",

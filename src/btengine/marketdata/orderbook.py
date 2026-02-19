@@ -23,15 +23,19 @@ class L2Book:
 
     _bid_heap: list[float] = field(default_factory=list, init=False, repr=False)  # store -price
     _ask_heap: list[float] = field(default_factory=list, init=False, repr=False)  # store +price
+    _bid_present: set[float] = field(default_factory=set, init=False, repr=False)
+    _ask_present: set[float] = field(default_factory=set, init=False, repr=False)
 
     def _maybe_rebuild_heaps(self) -> None:
         # Heaps accumulate stale entries. Rebuild opportunistically to cap memory/latency.
-        if len(self._bid_heap) > (len(self.bids) * 4 + 1000):
+        if len(self._bid_heap) > (len(self.bids) * 2 + 2048):
             self._bid_heap = [-p for p in self.bids.keys()]
             heapq.heapify(self._bid_heap)
-        if len(self._ask_heap) > (len(self.asks) * 4 + 1000):
+            self._bid_present = {float(p) for p in self.bids.keys()}
+        if len(self._ask_heap) > (len(self.asks) * 2 + 2048):
             self._ask_heap = [p for p in self.asks.keys()]
             heapq.heapify(self._ask_heap)
+            self._ask_present = {float(p) for p in self.asks.keys()}
 
     def apply_level(self, side: BookSide, price: float, quantity: float) -> None:
         """Apply a single level update."""
@@ -52,7 +56,14 @@ class L2Book:
             return
 
         book[price] = quantity
-        heapq.heappush(heap, heap_price)
+        if side == "bid":
+            if price not in self._bid_present:
+                heapq.heappush(heap, heap_price)
+                self._bid_present.add(price)
+        else:
+            if price not in self._ask_present:
+                heapq.heappush(heap, heap_price)
+                self._ask_present.add(price)
 
     def apply_depth_update(
         self,
@@ -73,6 +84,7 @@ class L2Book:
             qty = self.bids.get(price)
             if qty is None or qty <= 0.0:
                 heapq.heappop(self._bid_heap)
+                self._bid_present.discard(float(price))
                 continue
             return price
         return None
@@ -84,6 +96,7 @@ class L2Book:
             qty = self.asks.get(price)
             if qty is None or qty <= 0.0:
                 heapq.heappop(self._ask_heap)
+                self._ask_present.discard(float(price))
                 continue
             return price
         return None

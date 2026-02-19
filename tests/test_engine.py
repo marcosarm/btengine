@@ -1,3 +1,4 @@
+from btengine.book_guard import BookGuardConfig
 from btengine.engine import BacktestEngine, EngineConfig
 from btengine.broker import SimBroker
 from btengine.execution.orders import Order
@@ -206,3 +207,206 @@ def test_engine_ticks_anchor_to_first_event_time():
     engine.run(events, strategy=strat)
 
     assert strat.ticks == [1_500, 2_500, 3_500]
+
+
+class _EntryThenForceCloseOnEnd:
+    def on_event(self, event: object, ctx) -> None:
+        if isinstance(event, DepthUpdate) and event.event_time_ms == 1_000:
+            ctx.broker.submit(
+                Order(id="open", symbol=event.symbol, side="buy", order_type="market", quantity=1.0),
+                ctx.book(event.symbol),
+                now_ms=ctx.now_ms,
+            )
+
+    def on_end(self, ctx) -> None:
+        ctx.broker.submit(
+            Order(id="close", symbol="BTCUSDT", side="sell", order_type="market", quantity=1.0),
+            ctx.book("BTCUSDT"),
+            now_ms=ctx.now_ms,
+        )
+
+
+def test_engine_allows_reducing_submit_outside_trading_window():
+    broker = SimBroker(maker_fee_frac=0.0, taker_fee_frac=0.0)
+    engine = BacktestEngine(
+        config=EngineConfig(tick_interval_ms=0, trading_start_ms=500, trading_end_ms=1_500),
+        broker=broker,
+    )
+
+    events = [
+        DepthUpdate(
+            received_time_ns=0,
+            event_time_ms=1_000,
+            transaction_time_ms=1_000,
+            symbol="BTCUSDT",
+            first_update_id=1,
+            final_update_id=1,
+            prev_final_update_id=0,
+            bid_updates=[(99.0, 10.0)],
+            ask_updates=[(100.0, 10.0)],
+        ),
+        DepthUpdate(
+            received_time_ns=0,
+            event_time_ms=2_000,
+            transaction_time_ms=2_000,
+            symbol="BTCUSDT",
+            first_update_id=2,
+            final_update_id=2,
+            prev_final_update_id=1,
+            bid_updates=[(99.0, 10.0)],
+            ask_updates=[(100.0, 10.0)],
+        ),
+    ]
+
+    res = engine.run(events, strategy=_EntryThenForceCloseOnEnd())
+    fills = res.ctx.broker.fills
+    assert [f.order_id for f in fills] == ["open", "close"]
+    pos = res.ctx.broker.portfolio.positions["BTCUSDT"]
+    assert abs(pos.qty) < 1e-12
+
+
+def test_engine_block_all_mode_blocks_reducing_submit_outside_trading_window():
+    broker = SimBroker(maker_fee_frac=0.0, taker_fee_frac=0.0)
+    engine = BacktestEngine(
+        config=EngineConfig(
+            tick_interval_ms=0,
+            trading_start_ms=500,
+            trading_end_ms=1_500,
+            trading_window_mode="block_all",
+        ),
+        broker=broker,
+    )
+
+    events = [
+        DepthUpdate(
+            received_time_ns=0,
+            event_time_ms=1_000,
+            transaction_time_ms=1_000,
+            symbol="BTCUSDT",
+            first_update_id=1,
+            final_update_id=1,
+            prev_final_update_id=0,
+            bid_updates=[(99.0, 10.0)],
+            ask_updates=[(100.0, 10.0)],
+        ),
+        DepthUpdate(
+            received_time_ns=0,
+            event_time_ms=2_000,
+            transaction_time_ms=2_000,
+            symbol="BTCUSDT",
+            first_update_id=2,
+            final_update_id=2,
+            prev_final_update_id=1,
+            bid_updates=[(99.0, 10.0)],
+            ask_updates=[(100.0, 10.0)],
+        ),
+    ]
+
+    res = engine.run(events, strategy=_EntryThenForceCloseOnEnd())
+    fills = res.ctx.broker.fills
+    assert [f.order_id for f in fills] == ["open"]
+    pos = res.ctx.broker.portfolio.positions["BTCUSDT"]
+    assert abs(pos.qty - 1.0) < 1e-12
+
+
+class _SubmitLatencyIocAtT900:
+    def on_event(self, event: object, ctx) -> None:
+        if not isinstance(event, DepthUpdate):
+            return
+        if event.event_time_ms != 900:
+            return
+        ctx.broker.submit(
+            Order(
+                id="lat",
+                symbol=event.symbol,
+                side="buy",
+                order_type="limit",
+                quantity=1.0,
+                price=100.0,
+                time_in_force="IOC",
+            ),
+            ctx.book(event.symbol),
+            now_ms=ctx.now_ms,
+        )
+
+
+def _depth(event_time_ms: int, ask_px: float) -> DepthUpdate:
+    return DepthUpdate(
+        received_time_ns=0,
+        event_time_ms=event_time_ms,
+        transaction_time_ms=event_time_ms,
+        symbol="BTCUSDT",
+        first_update_id=event_time_ms,
+        final_update_id=event_time_ms,
+        prev_final_update_id=event_time_ms - 1,
+        bid_updates=[(99.0, 10.0)],
+        ask_updates=[(ask_px, 10.0)],
+    )
+
+
+def test_engine_default_broker_time_mode_after_event():
+    broker = SimBroker(maker_fee_frac=0.0, taker_fee_frac=0.0, submit_latency_ms=100)
+    engine = BacktestEngine(config=EngineConfig(tick_interval_ms=0), broker=broker)
+    events = [_depth(900, 101.0), _depth(1_000, 100.0)]
+
+    res = engine.run(events, strategy=_SubmitLatencyIocAtT900())
+    fills = res.ctx.broker.fills
+    assert len(fills) == 1
+    assert fills[0].order_id == "lat"
+    assert fills[0].event_time_ms == 1_000
+
+
+def test_engine_broker_time_mode_before_event_legacy_behavior():
+    broker = SimBroker(maker_fee_frac=0.0, taker_fee_frac=0.0, submit_latency_ms=100)
+    engine = BacktestEngine(config=EngineConfig(tick_interval_ms=0, broker_time_mode="before_event"), broker=broker)
+    events = [_depth(900, 101.0), _depth(1_000, 100.0)]
+
+    res = engine.run(events, strategy=_SubmitLatencyIocAtT900())
+    assert len(res.ctx.broker.fills) == 0
+
+
+class _SubmitOnDepthForGuard:
+    def on_event(self, event: object, ctx) -> None:
+        if not isinstance(event, DepthUpdate):
+            return
+        ctx.broker.submit(
+            Order(id="g1", symbol=event.symbol, side="buy", order_type="market", quantity=1.0),
+            ctx.book(event.symbol),
+            now_ms=ctx.now_ms,
+        )
+
+
+def test_engine_can_enable_core_book_guard_via_config():
+    engine = BacktestEngine(
+        config=EngineConfig(
+            tick_interval_ms=0,
+            book_guard=BookGuardConfig(
+                enabled=True,
+                max_staleness_ms=0,
+                cooldown_ms=0,
+                warmup_depth_updates=0,
+                max_spread_bps=None,
+            ),
+            book_guard_symbol="BTCUSDT",
+        ),
+        broker=SimBroker(maker_fee_frac=0.0, taker_fee_frac=0.0),
+    )
+
+    events = [
+        DepthUpdate(
+            received_time_ns=0,
+            event_time_ms=1_000,
+            transaction_time_ms=1_000,
+            symbol="BTCUSDT",
+            first_update_id=1,
+            final_update_id=1,
+            prev_final_update_id=0,
+            bid_updates=[(99.0, 10.0)],
+            ask_updates=[],
+        ),
+    ]
+
+    res = engine.run(events, strategy=_SubmitOnDepthForGuard())
+    assert len(res.ctx.broker.fills) == 0
+    assert int(res.ctx.broker.stats.blocked_submits) == 1
+    assert int(res.ctx.broker.stats.blocked_submit_reason.get("missing_side", 0)) == 1

@@ -49,6 +49,23 @@ Optional (if not using default AWS credentials chain):
 - `scripts/run_backtest_batch.py`
 - `scripts/analyze_replay_temporal.py`
 
+## Recommended OI preset (anti-lookahead)
+
+For realistic open-interest alignment, prefer causal availability with a hard cap:
+
+```bash
+--open-interest-alignment causal_asof \
+--open-interest-availability-quantile 0.5 \
+--open-interest-min-delay-ms 5000 \
+--open-interest-max-delay-ms 300000
+```
+
+Equivalent deterministic fallback:
+
+```bash
+--open-interest-alignment fixed_delay --open-interest-delay-ms 300000
+```
+
 ## Docs
 
 - `docs/btengine/quickstart.md`

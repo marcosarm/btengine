@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Iterable, Protocol
+from typing import Iterable, Literal, Protocol
 
+from .book_guard import BookGuardConfig, BookGuardedBroker
 from .broker import SimBroker
 from .execution.orders import Order
 from .marketdata.orderbook import L2Book
@@ -32,6 +33,11 @@ class EngineConfig:
     tick_interval_ms: int = 1_000
     trading_start_ms: int | None = None
     trading_end_ms: int | None = None
+    trading_window_mode: Literal["entry_only", "block_all"] = "entry_only"
+    allow_reducing_outside_trading_window: bool = True
+    broker_time_mode: Literal["before_event", "after_event"] = "after_event"
+    book_guard: BookGuardConfig | None = None
+    book_guard_symbol: str | None = None
 
 
 @dataclass(slots=True)
@@ -121,9 +127,31 @@ class _TradingWindowBroker:
         return self._inner.on_trade(trade, now_ms=now_ms)
 
     def submit(self, order: Order, book: L2Book, now_ms: int) -> None:
-        if not self._ctx.is_trading_time():
+        if order.reduce_only and not self._is_reducing_order(order):
             return
-        return self._inner.submit(order, book, now_ms)
+        if self._ctx.is_trading_time():
+            return self._inner.submit(order, book, now_ms)
+        mode = self._ctx.config.trading_window_mode
+        if mode not in ("entry_only", "block_all"):
+            raise ValueError("trading_window_mode must be 'entry_only' or 'block_all'")
+        if mode == "entry_only" and (not self._ctx.config.allow_reducing_outside_trading_window):
+            mode = "block_all"
+        if mode == "entry_only" and self._is_reducing_order(order):
+            return self._inner.submit(order, book, now_ms)
+        return
+
+    def _is_reducing_order(self, order: Order) -> bool:
+        pos = self._inner.portfolio.positions.get(order.symbol)
+        if pos is None or pos.qty == 0.0:
+            return False
+        qty = float(order.quantity)
+        if qty <= 0.0:
+            return False
+        if pos.qty > 0.0 and order.side == "sell":
+            return qty <= float(pos.qty) + 1e-12
+        if pos.qty < 0.0 and order.side == "buy":
+            return qty <= abs(float(pos.qty)) + 1e-12
+        return False
 
     def cancel(self, order_id: str, *, now_ms: int | None = None) -> None:
         return self._inner.cancel(order_id, now_ms=now_ms)
@@ -138,8 +166,17 @@ class BacktestEngine:
         self.broker = broker or SimBroker()
 
     def run(self, events: Iterable[Event], *, strategy: Strategy) -> BacktestResult:
-        ctx = EngineContext(config=self.config, broker=self.broker)
-        ctx.broker = _TradingWindowBroker(self.broker, ctx)
+        broker_chain = self.broker
+        guard_cfg = self.config.book_guard
+        if guard_cfg is not None and bool(guard_cfg.enabled):
+            broker_chain = BookGuardedBroker(
+                broker_chain,
+                symbol=self.config.book_guard_symbol,
+                cfg=guard_cfg,
+            )
+
+        ctx = EngineContext(config=self.config, broker=broker_chain)
+        ctx.broker = _TradingWindowBroker(broker_chain, ctx)
 
         # Optional methods: let a strategy implement only the hooks it needs.
         on_start = getattr(strategy, "on_start", None)
@@ -152,24 +189,35 @@ class BacktestEngine:
 
         next_tick_ms: int | None = None
         tick_interval = int(self.config.tick_interval_ms or 0)
+        broker_time_mode = self.config.broker_time_mode
+        if broker_time_mode not in ("before_event", "after_event"):
+            raise ValueError("broker_time_mode must be 'before_event' or 'after_event'")
+        trading_window_mode = self.config.trading_window_mode
+        if trading_window_mode not in ("entry_only", "block_all"):
+            raise ValueError("trading_window_mode must be 'entry_only' or 'block_all'")
+
+        def _run_tick(ts: int, *, call_on_time: bool) -> None:
+            ctx.now_ms = int(ts)
+            if call_on_time:
+                ctx.broker.on_time(int(ts))
+            on_tick(int(ts), ctx)
 
         for ev in events:
             now = int(ev.event_time_ms)
 
-            # Drive ticks up to current event time.
+            # Drive ticks strictly before current event time.
             if tick_interval > 0 and callable(on_tick):
                 if next_tick_ms is None:
                     # Anchor ticks to the first observed timestamp.
                     next_tick_ms = now
 
-                while next_tick_ms <= now:
-                    ctx.now_ms = next_tick_ms
-                    ctx.broker.on_time(next_tick_ms)
-                    on_tick(next_tick_ms, ctx)
+                while next_tick_ms < now:
+                    _run_tick(next_tick_ms, call_on_time=True)
                     next_tick_ms += tick_interval
 
             ctx.now_ms = now
-            ctx.broker.on_time(now)
+            if broker_time_mode == "before_event":
+                ctx.broker.on_time(now)
 
             if isinstance(ev, DepthUpdate):
                 book = ctx.book(ev.symbol)
@@ -187,6 +235,15 @@ class BacktestEngine:
                 ctx.liquidation[ev.symbol] = ev
             else:
                 raise TypeError(f"unsupported event type: {type(ev)}")
+
+            if broker_time_mode == "after_event":
+                ctx.broker.on_time(now)
+
+            # If a tick lands exactly on this event timestamp, run it after
+            # the event has been applied.
+            if tick_interval > 0 and callable(on_tick) and next_tick_ms == now:
+                _run_tick(now, call_on_time=False)
+                next_tick_ms += tick_interval
 
             if callable(on_event):
                 on_event(ev, ctx)
