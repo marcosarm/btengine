@@ -15,6 +15,7 @@ from ._arrow import (
     parquet_column_is_monotonic_non_decreasing,
     resolve_filesystem_and_path,
     resolve_path,
+    resolve_sort_row_limit,
 )
 from .paths import CryptoHftLayout
 
@@ -35,7 +36,7 @@ def iter_trades_advanced(
     *,
     filesystem: fs.FileSystem | None = None,
     sort_mode: Literal["auto", "always", "never"] = "auto",
-    sort_row_limit: int | None = 5_000_000,
+    sort_row_limit: int | None = None,
 ) -> Iterator[Trade]:
     """Advanced variant with explicit sort control."""
 
@@ -64,9 +65,10 @@ def iter_trades_advanced(
         needs_sort = False
 
     if needs_sort:
+        effective_sort_row_limit = resolve_sort_row_limit(sort_row_limit)
         ensure_in_memory_sort_within_row_limit(
             pf,
-            row_limit=sort_row_limit,
+            row_limit=effective_sort_row_limit,
             context="iter_trades_advanced",
         )
         table = pf.read(columns=cols)

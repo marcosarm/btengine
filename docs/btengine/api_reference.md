@@ -204,7 +204,9 @@ Config:
 Leitores avancados (`iter_*_advanced`):
 
 - `sort_mode`: `auto` | `always` | `never`
-- `sort_row_limit`: limite de seguranca para sort in-memory (default `5_000_000` linhas)
+- `sort_row_limit`: limite de seguranca para sort in-memory
+  - se nao informado, usa `BTENGINE_SORT_ROW_LIMIT` do ambiente
+  - fallback no codigo: `10_000_000` linhas
   - se exceder, o reader levanta `MemoryError` com orientacao para reduzir janela ou pre-sort upstream
 
 ## Utilitarios

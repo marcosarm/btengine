@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pyarrow.fs as fs
 import pyarrow.parquet as pq
+
+DEFAULT_SORT_ROW_LIMIT = 10_000_000
+SORT_ROW_LIMIT_ENV_VAR = "BTENGINE_SORT_ROW_LIMIT"
 
 
 def resolve_filesystem_and_path(path_or_uri: str | Path) -> tuple[fs.FileSystem | None, str]:
@@ -80,3 +84,28 @@ def ensure_in_memory_sort_within_row_limit(
         f"{context}: in-memory sort requires {rows} rows, exceeds limit={limit}. "
         "Use a smaller time window or pre-sort parquet upstream."
     )
+
+
+def resolve_sort_row_limit(row_limit: int | None) -> int | None:
+    """Resolve an explicit limit or fallback to env/default.
+
+    Priority:
+    1) explicit `row_limit` argument
+    2) env `BTENGINE_SORT_ROW_LIMIT`
+    3) code default `DEFAULT_SORT_ROW_LIMIT`
+    """
+
+    if row_limit is not None:
+        return int(row_limit)
+
+    raw = os.getenv(SORT_ROW_LIMIT_ENV_VAR)
+    if raw is None or raw.strip() == "":
+        return DEFAULT_SORT_ROW_LIMIT
+
+    token = raw.strip().replace("_", "")
+    try:
+        return int(token)
+    except ValueError as exc:
+        raise ValueError(
+            f"invalid {SORT_ROW_LIMIT_ENV_VAR}={raw!r}; expected integer row count"
+        ) from exc

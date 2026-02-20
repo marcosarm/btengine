@@ -104,7 +104,9 @@ Mitigacao de memoria (novo):
 
 - os readers `iter_*_advanced(..., sort_row_limit=...)` aceitam limite de linhas
   para proteger contra sort in-memory muito grande
-- default atual: `5_000_000` linhas
+- default atual: `10_000_000` linhas
+- se `sort_row_limit` nao for informado, os readers tentam `BTENGINE_SORT_ROW_LIMIT`
+  do ambiente antes do fallback no codigo
 - se exceder esse limite no caminho que exige sort, o reader levanta `MemoryError`
   com orientacao para reduzir janela temporal ou pre-processar/parquet pre-ordenado
 
@@ -116,6 +118,12 @@ from btengine.data.cryptohftdata.orderbook import iter_depth_updates_advanced
 
 trades = iter_trades_advanced("trades.parquet", sort_mode="auto", sort_row_limit=2_000_000)
 depth = iter_depth_updates_advanced("orderbook_12.parquet", sort_mode="auto", sort_row_limit=1_000_000)
+```
+
+Exemplo via `.env`:
+
+```dotenv
+BTENGINE_SORT_ROW_LIMIT=20000000
 ```
 
 ## Horas faltantes (orderbook)

@@ -40,6 +40,7 @@ Use `.env.example` as a template and create a local `.env`.
 AWS_REGION=ap-northeast-1
 S3_BUCKET=amzn-tdata
 S3_PREFIX=hftdata
+BTENGINE_SORT_ROW_LIMIT=20000000
 
 # Optional (if you are not using default AWS credentials chain):
 AWS_ACCESS_KEY_ID=...
