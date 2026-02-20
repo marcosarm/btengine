@@ -12,6 +12,11 @@ from .portfolio import Portfolio
 from .types import DepthUpdate, Trade
 
 
+def _price_key(price: float) -> int:
+    # Normalize float prices into a deterministic key for level indexing.
+    return int(round(float(price) * 1_000_000_000.0))
+
+
 @dataclass(frozen=True, slots=True)
 class Fill:
     order_id: str
@@ -47,8 +52,11 @@ class SimBroker:
     fills: list[Fill] = field(default_factory=list)
 
     _maker_orders: dict[str, MakerQueueOrder] = field(default_factory=dict, init=False, repr=False)
+    _maker_level_index: dict[tuple[str, str, int], list[str]] = field(default_factory=dict, init=False, repr=False)
+    _maker_order_level_key: dict[str, tuple[str, str, int]] = field(default_factory=dict, init=False, repr=False)
     _pending_submits: list[tuple[int, int, Order, L2Book]] = field(default_factory=list, init=False, repr=False)
     _pending_cancels: list[tuple[int, int, str]] = field(default_factory=list, init=False, repr=False)
+    _pending_submit_cancel_seq_cutoff: dict[str, int] = field(default_factory=dict, init=False, repr=False)
     _seq: int = field(default=0, init=False, repr=False)
     _maker_seq: int = field(default=0, init=False, repr=False)
 
@@ -64,7 +72,11 @@ class SimBroker:
             self._cancel_now(order_id)
 
         while self._pending_submits and self._pending_submits[0][0] <= now:
-            _, _, order, book = heapq.heappop(self._pending_submits)
+            _, submit_seq, order, book = heapq.heappop(self._pending_submits)
+            cancel_cutoff = int(self._pending_submit_cancel_seq_cutoff.get(order.id, -1))
+            if int(submit_seq) <= cancel_cutoff:
+                # Lazy-canceled before activation.
+                continue
             self._submit_now(order, book, now)
 
     def submit(self, order: Order, book: L2Book, now_ms: int) -> None:
@@ -162,6 +174,9 @@ class SimBroker:
             trade_participation=float(self.maker_trade_participation),
             priority_seq=int(self._maker_seq),
         )
+        key = (str(order.symbol), str(order.side), _price_key(float(order.price)))
+        self._maker_level_index.setdefault(key, []).append(order.id)
+        self._maker_order_level_key[order.id] = key
         self._maker_seq += 1
 
     def _fill_taker(self, order: Order, book: L2Book, now_ms: int, *, limit_price: float | None) -> tuple[float, float]:
@@ -194,59 +209,58 @@ class SimBroker:
         # Update book first.
         book.apply_depth_update(update.bid_updates, update.ask_updates)
 
-        # Progress maker queues for touched levels.
-        for order_id, mo in list(self._maker_orders.items()):
-            if mo.symbol != update.symbol:
-                continue
-            # Only updates on our side at our price affect queue_ahead.
-            touched = update.bid_updates if mo.side == "buy" else update.ask_updates
-            for p, q in touched:
-                if math.isclose(p, mo.price, rel_tol=0.0, abs_tol=1e-9):
-                    mo.on_book_qty_update(float(q))
-                    break
-
-            if mo.is_filled():
-                # Filled via previous trades; finalize and remove.
-                self._maker_orders.pop(order_id, None)
+        # Progress maker queues only for touched levels on the same side.
+        for p, q in update.bid_updates:
+            self._on_depth_level_qty(symbol=str(update.symbol), maker_side="buy", price=float(p), new_qty=float(q))
+        for p, q in update.ask_updates:
+            self._on_depth_level_qty(symbol=str(update.symbol), maker_side="sell", price=float(p), new_qty=float(q))
 
     def on_trade(self, trade: Trade, now_ms: int) -> None:
-        # Group orders by side/price so multiple own orders at the same level
-        # share the same trade-volume budget deterministically.
-        grouped: dict[tuple[str, float], list[tuple[str, MakerQueueOrder]]] = {}
-        for order_id, mo in list(self._maker_orders.items()):
-            if mo.symbol != trade.symbol:
-                continue
-            grouped.setdefault((mo.side, float(mo.price)), []).append((order_id, mo))
+        # For one trade, only one side/price level can fill makers.
+        maker_side = "buy" if bool(trade.is_buyer_maker) else "sell"
+        key = (str(trade.symbol), maker_side, _price_key(float(trade.price)))
+        bucket = self._maker_level_index.get(key)
+        if not bucket:
+            return
 
-        for _, items in grouped.items():
-            remaining_trade_qty = float(trade.quantity)
-            items.sort(key=lambda x: int(x[1].priority_seq))
-            for order_id, mo in items:
-                if remaining_trade_qty <= 0.0:
-                    break
+        remaining_trade_qty = float(trade.quantity)
+        active_ids: list[str] = []
+
+        for order_id in bucket:
+            mo = self._maker_orders.get(order_id)
+            if mo is None:
+                continue
+
+            if remaining_trade_qty > 0.0:
                 fill_qty, consumed_qty = mo.on_trade_budgeted(trade, max_trade_qty=remaining_trade_qty)
                 if consumed_qty > 0.0:
                     remaining_trade_qty = max(0.0, remaining_trade_qty - float(consumed_qty))
-                if fill_qty <= 0.0:
-                    continue
-
-                fee = fill_qty * trade.price * self.maker_fee_frac
-                self.portfolio.apply_fill(mo.symbol, mo.side, fill_qty, trade.price, fee_usdt=fee)
-                self.fills.append(
-                    Fill(
-                        order_id=order_id,
-                        symbol=mo.symbol,
-                        side=mo.side,
-                        quantity=fill_qty,
-                        price=trade.price,
-                        fee_usdt=fee,
-                        event_time_ms=now_ms,
-                        liquidity="maker",
+                if fill_qty > 0.0:
+                    fee = fill_qty * trade.price * self.maker_fee_frac
+                    self.portfolio.apply_fill(mo.symbol, mo.side, fill_qty, trade.price, fee_usdt=fee)
+                    self.fills.append(
+                        Fill(
+                            order_id=order_id,
+                            symbol=mo.symbol,
+                            side=mo.side,
+                            quantity=fill_qty,
+                            price=trade.price,
+                            fee_usdt=fee,
+                            event_time_ms=now_ms,
+                            liquidity="maker",
+                        )
                     )
-                )
 
-                if mo.is_filled():
-                    self._maker_orders.pop(order_id, None)
+            if mo.is_filled():
+                self._maker_orders.pop(order_id, None)
+                self._maker_order_level_key.pop(order_id, None)
+            else:
+                active_ids.append(order_id)
+
+        if active_ids:
+            self._maker_level_index[key] = active_ids
+        else:
+            self._maker_level_index.pop(key, None)
 
     def cancel(self, order_id: str, *, now_ms: int | None = None) -> None:
         """Cancel an open maker order.
@@ -265,16 +279,50 @@ class SimBroker:
 
     def _cancel_now(self, order_id: str) -> None:
         self._maker_orders.pop(order_id, None)
+        self._remove_order_from_level_index(order_id)
         # Also cancel any order that has been submitted but not yet activated.
-        self._drop_pending_submits(order_id)
+        # This is lazy: when pending submits are popped in `on_time`, entries
+        # with submit_seq <= cutoff for this order_id are discarded.
+        self._pending_submit_cancel_seq_cutoff[order_id] = max(
+            int(self._pending_submit_cancel_seq_cutoff.get(order_id, -1)),
+            int(self._seq),
+        )
 
-    def _drop_pending_submits(self, order_id: str) -> None:
-        if not self._pending_submits:
+    def _on_depth_level_qty(self, *, symbol: str, maker_side: str, price: float, new_qty: float) -> None:
+        key = (str(symbol), str(maker_side), _price_key(float(price)))
+        bucket = self._maker_level_index.get(key)
+        if not bucket:
             return
-        n0 = len(self._pending_submits)
-        self._pending_submits = [x for x in self._pending_submits if x[2].id != order_id]
-        if len(self._pending_submits) != n0:
-            heapq.heapify(self._pending_submits)
+
+        active_ids: list[str] = []
+        for order_id in bucket:
+            mo = self._maker_orders.get(order_id)
+            if mo is None:
+                continue
+            mo.on_book_qty_update(float(new_qty))
+            if mo.is_filled():
+                self._maker_orders.pop(order_id, None)
+                self._maker_order_level_key.pop(order_id, None)
+                continue
+            active_ids.append(order_id)
+
+        if active_ids:
+            self._maker_level_index[key] = active_ids
+        else:
+            self._maker_level_index.pop(key, None)
+
+    def _remove_order_from_level_index(self, order_id: str) -> None:
+        key = self._maker_order_level_key.pop(order_id, None)
+        if key is None:
+            return
+        bucket = self._maker_level_index.get(key)
+        if not bucket:
+            return
+        out = [oid for oid in bucket if oid != order_id]
+        if out:
+            self._maker_level_index[key] = out
+        else:
+            self._maker_level_index.pop(key, None)
 
     def has_open_orders(self) -> bool:
         return bool(self._maker_orders)

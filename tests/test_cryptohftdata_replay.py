@@ -57,10 +57,15 @@ def test_build_day_stream_open_interest_causal_asof_quantile(monkeypatch):
         include_open_interest=True,
         include_liquidations=False,
         open_interest_alignment_mode="causal_asof",
-        open_interest_availability_quantile=0.5,  # median lag => 1500ms
+        open_interest_availability_quantile=0.5,
     )
     out = list(replay_mod.build_day_stream(_DummyLayout(), cfg=cfg, symbol="BTCUSDT", day=date(2025, 7, 20), filesystem=None))
-    assert [e.event_time_ms for e in out] == [2_500, 3_500, 4_500]
+    # causal_asof now uses rolling past-only quantile:
+    # lags are [100, 1500, 10000]
+    # ev1: no history -> delay 0
+    # ev2: q([100]) = 100
+    # ev3: q([100,1500]) = 800
+    assert [e.event_time_ms for e in out] == [1_000, 2_100, 3_800]
 
 
 def test_build_day_stream_open_interest_causal_asof_respects_max_delay(monkeypatch):
@@ -78,8 +83,51 @@ def test_build_day_stream_open_interest_causal_asof_respects_max_delay(monkeypat
         include_open_interest=True,
         include_liquidations=False,
         open_interest_alignment_mode="causal_asof",
-        open_interest_availability_quantile=0.9,  # would be very large without cap
+        open_interest_availability_quantile=0.9,
         open_interest_max_delay_ms=2_000,
+    )
+    out = list(replay_mod.build_day_stream(_DummyLayout(), cfg=cfg, symbol="BTCUSDT", day=date(2025, 7, 20), filesystem=None))
+    assert [e.event_time_ms for e in out] == [1_000, 2_100, 4_360]
+
+
+def test_build_day_stream_open_interest_causal_asof_global_keeps_global_quantile(monkeypatch):
+    monkeypatch.setattr(
+        replay_mod,
+        "iter_open_interest_for_day",
+        lambda *args, **kwargs: iter([_oi(1_000, 1_100), _oi(2_000, 3_500), _oi(3_000, 13_000)]),
+    )
+
+    cfg = replay_mod.CryptoHftDayConfig(
+        include_trades=False,
+        include_orderbook=False,
+        include_mark_price=False,
+        include_ticker=False,
+        include_open_interest=True,
+        include_liquidations=False,
+        open_interest_alignment_mode="causal_asof_global",
+        open_interest_availability_quantile=0.5,  # median lag over full day => 1500ms
+    )
+    out = list(replay_mod.build_day_stream(_DummyLayout(), cfg=cfg, symbol="BTCUSDT", day=date(2025, 7, 20), filesystem=None))
+    assert [e.event_time_ms for e in out] == [2_500, 3_500, 4_500]
+
+
+def test_build_day_stream_open_interest_causal_asof_uses_precalibrated_floor(monkeypatch):
+    monkeypatch.setattr(
+        replay_mod,
+        "iter_open_interest_for_day",
+        lambda *args, **kwargs: iter([_oi(1_000, 1_100), _oi(2_000, 3_500), _oi(3_000, 13_000)]),
+    )
+
+    cfg = replay_mod.CryptoHftDayConfig(
+        include_trades=False,
+        include_orderbook=False,
+        include_mark_price=False,
+        include_ticker=False,
+        include_open_interest=True,
+        include_liquidations=False,
+        open_interest_alignment_mode="causal_asof",
+        open_interest_availability_quantile=0.5,
+        open_interest_calibrated_delay_ms=2_000,
     )
     out = list(replay_mod.build_day_stream(_DummyLayout(), cfg=cfg, symbol="BTCUSDT", day=date(2025, 7, 20), filesystem=None))
     assert [e.event_time_ms for e in out] == [3_000, 4_000, 5_000]
@@ -122,6 +170,27 @@ def test_build_day_stream_open_interest_fixed_delay_rejects_negative_delay(monke
         include_liquidations=False,
         open_interest_alignment_mode="fixed_delay",
         open_interest_delay_ms=-1,
+    )
+    with pytest.raises(ValueError):
+        list(replay_mod.build_day_stream(_DummyLayout(), cfg=cfg, symbol="BTCUSDT", day=date(2025, 7, 20), filesystem=None))
+
+
+def test_build_day_stream_open_interest_rejects_negative_precalibrated_delay(monkeypatch):
+    monkeypatch.setattr(
+        replay_mod,
+        "iter_open_interest_for_day",
+        lambda *args, **kwargs: iter([_oi(1_000, 1_100)]),
+    )
+
+    cfg = replay_mod.CryptoHftDayConfig(
+        include_trades=False,
+        include_orderbook=False,
+        include_mark_price=False,
+        include_ticker=False,
+        include_open_interest=True,
+        include_liquidations=False,
+        open_interest_alignment_mode="causal_asof",
+        open_interest_calibrated_delay_ms=-1,
     )
     with pytest.raises(ValueError):
         list(replay_mod.build_day_stream(_DummyLayout(), cfg=cfg, symbol="BTCUSDT", day=date(2025, 7, 20), filesystem=None))

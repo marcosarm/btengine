@@ -30,7 +30,13 @@ No `EngineContext`, os ultimos valores por simbolo sao mantidos em:
 ## Stream ordering e merge
 
 `btengine.replay.merge_event_streams()` faz um k-way merge de multiplos streams assumindo que cada um esta ordenado por `event_time_ms`.
-Em empate de `event_time_ms`, o desempate usa `received_time_ns` (quando disponivel) e depois ordem do stream.
+Em empate de `event_time_ms`, o desempate usa:
+
+- `received_time_ns` (quando disponivel)
+- metadados deterministicos do evento (prioridade por tipo + ids conhecidos)
+- ordem do stream (fallback final)
+
+Isso reduz vies de causalidade em empates sem perder determinismo.
 
 No adapter CryptoHFTData:
 
@@ -39,6 +45,12 @@ No adapter CryptoHFTData:
 - mark_price: detecta e, se necessario, ordena por `event_time`
 
 Se um stream nao estiver ordenado, o merge pode produzir "viagem no tempo" e quebrar invariantes do motor.
+
+Observacao sobre open interest:
+
+- modo recomendado: `open_interest_alignment_mode=causal_asof` (rolling past-only, sem olhar futuro)
+- modo legado disponivel para comparacao: `causal_asof_global` (usa quantil global do dia e pode introduzir leakage)
+- `open_interest_calibrated_delay_ms` pode ser usado como piso externo pre-calibrado (offline)
 
 ## Janelas de tempo (stream vs trading)
 

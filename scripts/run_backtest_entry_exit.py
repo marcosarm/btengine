@@ -3,23 +3,18 @@ from __future__ import annotations
 import argparse
 import csv
 import sys
-from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Literal
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from btengine.analytics import max_drawdown, round_trips_from_fills, summarize_round_trips
-from btengine.book_guard import BookGuardConfig
 from btengine.broker import SimBroker
 from btengine.data.cryptohftdata import CryptoHftDayConfig, CryptoHftLayout, S3Config, build_day_stream, make_s3_filesystem
-from btengine.engine import BacktestEngine, EngineConfig, EngineContext
-from btengine.execution.orders import Order
-from btengine.replay import merge_event_streams
-from btengine.types import DepthUpdate, MarkPrice
-from btengine.util import load_dotenv
+from btengine.engine import BacktestEngine, EngineConfig
+from btengine.strategies import EntryExitStrategy
+from btengine.util import add_strict_book_args, load_dotenv, strict_book_config_from_args
 
 
 def _parse_day(s: str) -> date:
@@ -37,107 +32,6 @@ def _parse_hours(s: str) -> range:
 
 def _utc_iso(ms: int) -> str:
     return datetime.fromtimestamp(int(ms) / 1000.0, tz=timezone.utc).isoformat()
-
-
-@dataclass(slots=True)
-class EntryExitStrategy:
-    symbol: str
-    direction: Literal["long", "short"]
-    target_qty: float
-    schedule_ms: list[tuple[int, int]]  # [(enter_ms, exit_ms), ...]
-    force_close_on_end: bool = True
-
-    # Internal state.
-    _cycle: int = 0
-    _in_position: bool = False
-    equity_curve: list[tuple[int, float]] = field(default_factory=list)
-
-    def _pos_qty(self, ctx: EngineContext) -> float:
-        p = ctx.broker.portfolio.positions.get(self.symbol)
-        return float(p.qty) if p is not None else 0.0
-
-    def _close_qty(self, ctx: EngineContext) -> float:
-        return abs(self._pos_qty(ctx))
-
-    def _submit_entry(self, ctx: EngineContext) -> None:
-        side = "buy" if self.direction == "long" else "sell"
-        book = ctx.book(self.symbol)
-        ctx.broker.submit(
-            Order(
-                id=f"entry_{self._cycle}",
-                symbol=self.symbol,
-                side=side,
-                order_type="market",
-                quantity=float(self.target_qty),
-            ),
-            book,
-            now_ms=int(ctx.now_ms),
-        )
-
-        # Market fills are immediate when there is depth.
-        self._in_position = (self._pos_qty(ctx) != 0.0)
-
-    def _submit_exit(self, ctx: EngineContext) -> None:
-        q = self._close_qty(ctx)
-        if q <= 0.0:
-            self._in_position = False
-            return
-
-        side = "sell" if self._pos_qty(ctx) > 0.0 else "buy"
-        book = ctx.book(self.symbol)
-        ctx.broker.submit(
-            Order(
-                id=f"exit_{self._cycle}",
-                symbol=self.symbol,
-                side=side,
-                order_type="market",
-                quantity=float(q),
-            ),
-            book,
-            now_ms=int(ctx.now_ms),
-        )
-        self._in_position = (self._pos_qty(ctx) != 0.0)
-
-    def on_event(self, event: object, ctx: EngineContext) -> None:
-        # Equity curve (PnL) sampled on mark price.
-        if isinstance(event, MarkPrice) and event.symbol == self.symbol:
-            p = ctx.broker.portfolio.positions.get(self.symbol)
-            unreal = 0.0
-            if p is not None and p.qty != 0.0:
-                unreal = float(p.qty) * (float(event.mark_price) - float(p.avg_price))
-            eq = float(ctx.broker.portfolio.realized_pnl_usdt) + unreal
-            self.equity_curve.append((int(event.event_time_ms), float(eq)))
-            return
-
-        if not isinstance(event, DepthUpdate) or event.symbol != self.symbol:
-            return
-
-        if self._cycle >= len(self.schedule_ms):
-            return
-
-        enter_ms, exit_ms = self.schedule_ms[self._cycle]
-        now = int(ctx.now_ms)
-
-        # Wait until book is formed.
-        book = ctx.book(self.symbol)
-        if book.best_bid() is None or book.best_ask() is None:
-            return
-
-        if not self._in_position and now >= int(enter_ms):
-            self._submit_entry(ctx)
-            return
-
-        if self._in_position and now >= int(exit_ms):
-            self._submit_exit(ctx)
-            if not self._in_position:
-                self._cycle += 1
-
-    def on_end(self, ctx: EngineContext) -> None:
-        if not self.force_close_on_end:
-            return
-        if self._close_qty(ctx) <= 0.0:
-            return
-        self._submit_exit(ctx)
 
 
 def _write_fills_csv(path: str, fills) -> None:
@@ -169,9 +63,15 @@ def main() -> int:
     ap.add_argument("--open-interest-delay-ms", type=int, default=0)
     ap.add_argument(
         "--open-interest-alignment",
-        choices=["fixed_delay", "causal_asof"],
+        choices=["fixed_delay", "causal_asof", "causal_asof_global"],
         default="fixed_delay",
         help="How to place open_interest on the replay timeline.",
+    )
+    ap.add_argument(
+        "--open-interest-calibrated-delay-ms",
+        type=int,
+        default=None,
+        help="Optional externally-calibrated OI availability delay floor (ms).",
     )
     ap.add_argument(
         "--open-interest-availability-quantile",
@@ -204,19 +104,7 @@ def main() -> int:
     ap.add_argument("--taker-fee-frac", type=float, default=0.0005)
     ap.add_argument("--submit-latency-ms", type=int, default=0)
     ap.add_argument("--cancel-latency-ms", type=int, default=0)
-    ap.add_argument("--strict-book", action="store_true", help="Block submits on stale/crossed/invalid book.")
-    ap.add_argument("--strict-book-max-staleness-ms", type=int, default=250, help="Block submits when latest depth is older than N ms.")
-    ap.add_argument("--strict-book-max-spread", type=float, default=None, help="Optional max absolute spread.")
-    ap.add_argument("--strict-book-max-spread-bps", type=float, default=5.0, help="Optional max spread in bps.")
-    ap.add_argument("--strict-book-cooldown-ms", type=int, default=1_000, help="Block submits for N ms after guard trip.")
-    ap.add_argument("--strict-book-warmup-depth-updates", type=int, default=1_000, help="Block submits for N depth updates after guard trip.")
-    ap.add_argument("--strict-book-reset-on-mismatch", action="store_true", default=True)
-    ap.add_argument("--strict-book-no-reset-on-mismatch", dest="strict_book_reset_on_mismatch", action="store_false")
-    ap.add_argument("--strict-book-reset-on-crossed", action="store_true", default=True)
-    ap.add_argument("--strict-book-no-reset-on-crossed", dest="strict_book_reset_on_crossed", action="store_false")
-    ap.add_argument("--strict-book-reset-on-missing-side", action="store_true", default=False)
-    ap.add_argument("--strict-book-reset-on-spread", action="store_true", default=False)
-    ap.add_argument("--strict-book-reset-on-stale", action="store_true", default=False)
+    add_strict_book_args(ap, default_max_staleness_ms=250)
 
     ap.add_argument("--out-fills-csv", default=None)
     ap.add_argument("--out-equity-csv", default=None)
@@ -278,6 +166,9 @@ def main() -> int:
         include_open_interest=bool(args.include_open_interest),
         include_liquidations=bool(args.include_liquidations),
         open_interest_delay_ms=int(args.open_interest_delay_ms or 0),
+        open_interest_calibrated_delay_ms=(
+            None if args.open_interest_calibrated_delay_ms is None else int(args.open_interest_calibrated_delay_ms)
+        ),
         open_interest_alignment_mode=str(args.open_interest_alignment),  # type: ignore[arg-type]
         open_interest_availability_quantile=float(args.open_interest_availability_quantile),
         open_interest_min_delay_ms=int(args.open_interest_min_delay_ms or 0),
@@ -290,7 +181,7 @@ def main() -> int:
     )
 
     stream = build_day_stream(layout, cfg=cfg, symbol=str(args.symbol), day=d, filesystem=fs)
-    events = merge_event_streams(stream)
+    events = stream
 
     max_events = int(args.max_events or 0)
     if max_events > 0:
@@ -307,21 +198,7 @@ def main() -> int:
         submit_latency_ms=int(args.submit_latency_ms),
         cancel_latency_ms=int(args.cancel_latency_ms),
     )
-    guard_cfg = None
-    if args.strict_book:
-        guard_cfg = BookGuardConfig(
-            enabled=True,
-            max_spread=args.strict_book_max_spread,
-            max_spread_bps=args.strict_book_max_spread_bps,
-            max_staleness_ms=int(args.strict_book_max_staleness_ms or 0),
-            cooldown_ms=int(args.strict_book_cooldown_ms or 0),
-            warmup_depth_updates=int(args.strict_book_warmup_depth_updates or 0),
-            reset_on_mismatch=bool(args.strict_book_reset_on_mismatch),
-            reset_on_crossed=bool(args.strict_book_reset_on_crossed),
-            reset_on_missing_side=bool(args.strict_book_reset_on_missing_side),
-            reset_on_spread=bool(args.strict_book_reset_on_spread),
-            reset_on_stale=bool(args.strict_book_reset_on_stale),
-        )
+    guard_cfg = strict_book_config_from_args(args)
     engine = BacktestEngine(
         config=EngineConfig(
             tick_interval_ms=int(args.tick_ms),

@@ -117,8 +117,11 @@ def main() -> int:
 
     access_key = env.get("AWS_ACCESS_KEY_ID") or None
     secret_key = env.get("AWS_SECRET_ACCESS_KEY") or None
+    session_token = env.get("AWS_SESSION_TOKEN") or None
 
-    fs = make_s3_filesystem(S3Config(region=region, access_key=access_key, secret_key=secret_key))
+    fs = make_s3_filesystem(
+        S3Config(region=region, access_key=access_key, secret_key=secret_key, session_token=session_token)
+    )
     layout = CryptoHftLayout(bucket=bucket, prefix=prefix)
 
     day = _parse_day(args.day)

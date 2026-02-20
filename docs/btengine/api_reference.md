@@ -22,6 +22,7 @@ Arquivo: `src/btengine/__init__.py`
 ```python
 from btengine import BacktestEngine, EngineConfig, Strategy
 from btengine import DepthUpdate, Trade, MarkPrice, Ticker, OpenInterest, Liquidation, Side
+from btengine import EntryExitStrategy, MaCrossStrategy
 ```
 
 ## Engine
@@ -158,6 +159,10 @@ Config:
   - `include_trades`, `include_orderbook`, `include_mark_price`
   - `include_ticker`, `include_open_interest`, `include_liquidations`
   - `open_interest_delay_ms`
+  - `open_interest_calibrated_delay_ms`
+  - `open_interest_alignment_mode` (`fixed_delay`, `causal_asof`, `causal_asof_global`)
+  - `open_interest_availability_quantile`
+  - `open_interest_min_delay_ms`, `open_interest_max_delay_ms`
   - `orderbook_hours`, `orderbook_skip_missing`
   - `skip_missing_daily_files`
   - `stream_start_ms`, `stream_end_ms`
@@ -167,3 +172,8 @@ Config:
 Arquivo: `src/btengine/util/dotenv.py`
 
 - `load_dotenv(path, override=False) -> DotenvResult`
+
+Arquivo: `src/btengine/util/cli.py`
+
+- `add_strict_book_args(parser, ...)`
+- `strict_book_config_from_args(args) -> BookGuardConfig | None`

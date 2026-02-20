@@ -75,7 +75,8 @@ Execution knobs (for strategies that submit orders):
 
 Data knobs (anti-lookahead):
 - `--open-interest-delay-ms`
-- `--open-interest-alignment` (`fixed_delay` or `causal_asof`)
+- `--open-interest-alignment` (`fixed_delay`, `causal_asof`, `causal_asof_global`)
+- `--open-interest-calibrated-delay-ms`
 - `--open-interest-availability-quantile`
 - `--open-interest-min-delay-ms`
 - `--open-interest-max-delay-ms`
@@ -87,7 +88,9 @@ python scripts\\run_backtest_replay.py --day 2025-07-01 --symbols BTCUSDT --mark
 ```
 
 Notes:
-- `causal_asof` avoids direct lookahead from `timestamp`.
+- `causal_asof` now uses rolling past-only quantile (no same-day lookahead).
+- `causal_asof_global` keeps the legacy behavior (global day quantile) and may leak future information.
+- `open-interest-calibrated-delay-ms` works as an external pre-calibrated delay floor.
 - `max-delay=300000` (5 min) avoids excessively stale OI snapshots in this dataset.
 - deterministic equivalent: `--open-interest-alignment fixed_delay --open-interest-delay-ms 300000`.
 
@@ -150,6 +153,12 @@ Guard knobs:
 - `--strict-book-warmup-depth-updates`
 - `--strict-book-reset-on-mismatch` / `--strict-book-no-reset-on-mismatch`
 - `--strict-book-reset-on-crossed` / `--strict-book-no-reset-on-crossed`
+
+Default guard profile used by scripts:
+- `max_staleness_ms=250`
+- `max_spread_bps=5.0`
+- `cooldown_ms=1000`
+- `warmup_depth_updates=1000`
 
 CSV columns:
 - temporal: `out_of_order`, `duplicates`, `outside_window`

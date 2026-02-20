@@ -11,12 +11,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from btengine.data.cryptohftdata import CryptoHftDayConfig, CryptoHftLayout, S3Config, build_day_stream, make_s3_filesystem
-from btengine.book_guard import BookGuardConfig
 from btengine.broker import SimBroker
 from btengine.engine import BacktestEngine, EngineConfig
 from btengine.replay import merge_event_streams
 from btengine.types import DepthUpdate, Liquidation, MarkPrice, OpenInterest, Ticker, Trade
-from btengine.util import load_dotenv
+from btengine.util import add_strict_book_args, load_dotenv, strict_book_config_from_args
 
 
 def _parse_day(s: str) -> date:
@@ -113,9 +112,15 @@ def main() -> int:
     ap.add_argument("--open-interest-delay-ms", type=int, default=0, help="Delay (ms) to make open_interest snapshots available after their timestamp (anti-lookahead).")
     ap.add_argument(
         "--open-interest-alignment",
-        choices=["fixed_delay", "causal_asof"],
+        choices=["fixed_delay", "causal_asof", "causal_asof_global"],
         default="fixed_delay",
         help="How to place open_interest on the replay timeline.",
+    )
+    ap.add_argument(
+        "--open-interest-calibrated-delay-ms",
+        type=int,
+        default=None,
+        help="Optional externally-calibrated OI availability delay floor (ms).",
     )
     ap.add_argument(
         "--open-interest-availability-quantile",
@@ -139,19 +144,7 @@ def main() -> int:
     ap.add_argument("--maker-queue-ahead-factor", type=float, default=1.0, help="Multiply visible queue ahead by this factor.")
     ap.add_argument("--maker-queue-ahead-extra-qty", type=float, default=0.0, help="Add extra base qty ahead (conservative).")
     ap.add_argument("--maker-trade-participation", type=float, default=1.0, help="Trade participation factor in (0,1].")
-    ap.add_argument("--strict-book", action="store_true", help="Block submits on stale/crossed/invalid book.")
-    ap.add_argument("--strict-book-max-staleness-ms", type=int, default=250, help="Block submits when latest depth is older than N ms.")
-    ap.add_argument("--strict-book-max-spread", type=float, default=None, help="Optional max absolute spread.")
-    ap.add_argument("--strict-book-max-spread-bps", type=float, default=5.0, help="Optional max spread in bps.")
-    ap.add_argument("--strict-book-cooldown-ms", type=int, default=1_000, help="Block submits for N ms after guard trip.")
-    ap.add_argument("--strict-book-warmup-depth-updates", type=int, default=1_000, help="Block submits for N depth updates after guard trip.")
-    ap.add_argument("--strict-book-reset-on-mismatch", action="store_true", default=True)
-    ap.add_argument("--strict-book-no-reset-on-mismatch", dest="strict_book_reset_on_mismatch", action="store_false")
-    ap.add_argument("--strict-book-reset-on-crossed", action="store_true", default=True)
-    ap.add_argument("--strict-book-no-reset-on-crossed", dest="strict_book_reset_on_crossed", action="store_false")
-    ap.add_argument("--strict-book-reset-on-missing-side", action="store_true", default=False)
-    ap.add_argument("--strict-book-reset-on-spread", action="store_true", default=False)
-    ap.add_argument("--strict-book-reset-on-stale", action="store_true", default=False)
+    add_strict_book_args(ap, default_max_staleness_ms=250)
     args = ap.parse_args()
 
     env = load_dotenv(args.dotenv, override=False).values
@@ -164,8 +157,11 @@ def main() -> int:
     region = env.get("AWS_REGION") or None
     access_key = env.get("AWS_ACCESS_KEY_ID") or None
     secret_key = env.get("AWS_SECRET_ACCESS_KEY") or None
+    session_token = env.get("AWS_SESSION_TOKEN") or None
 
-    fs = make_s3_filesystem(S3Config(region=region, access_key=access_key, secret_key=secret_key))
+    fs = make_s3_filesystem(
+        S3Config(region=region, access_key=access_key, secret_key=secret_key, session_token=session_token)
+    )
     layout = CryptoHftLayout(bucket=bucket, prefix=prefix)
 
     day = _parse_day(args.day)
@@ -200,6 +196,9 @@ def main() -> int:
             include_open_interest=args.include_open_interest,
             include_liquidations=args.include_liquidations,
             open_interest_delay_ms=int(args.open_interest_delay_ms or 0),
+            open_interest_calibrated_delay_ms=(
+                None if args.open_interest_calibrated_delay_ms is None else int(args.open_interest_calibrated_delay_ms)
+            ),
             open_interest_alignment_mode=str(args.open_interest_alignment),  # type: ignore[arg-type]
             open_interest_availability_quantile=float(args.open_interest_availability_quantile),
             open_interest_min_delay_ms=int(args.open_interest_min_delay_ms or 0),
@@ -228,21 +227,7 @@ def main() -> int:
         maker_queue_ahead_extra_qty=float(args.maker_queue_ahead_extra_qty),
         maker_trade_participation=float(args.maker_trade_participation),
     )
-    guard_cfg = None
-    if args.strict_book:
-        guard_cfg = BookGuardConfig(
-            enabled=True,
-            max_spread=args.strict_book_max_spread,
-            max_spread_bps=args.strict_book_max_spread_bps,
-            max_staleness_ms=int(args.strict_book_max_staleness_ms or 0),
-            cooldown_ms=int(args.strict_book_cooldown_ms or 0),
-            warmup_depth_updates=int(args.strict_book_warmup_depth_updates or 0),
-            reset_on_mismatch=bool(args.strict_book_reset_on_mismatch),
-            reset_on_crossed=bool(args.strict_book_reset_on_crossed),
-            reset_on_missing_side=bool(args.strict_book_reset_on_missing_side),
-            reset_on_spread=bool(args.strict_book_reset_on_spread),
-            reset_on_stale=bool(args.strict_book_reset_on_stale),
-        )
+    guard_cfg = strict_book_config_from_args(args)
     engine = BacktestEngine(
         config=EngineConfig(
             tick_interval_ms=args.tick_ms,

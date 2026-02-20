@@ -234,9 +234,15 @@ def main() -> int:
     ap.add_argument("--open-interest-delay-ms", type=int, default=0, help="Delay (ms) to apply to open_interest availability time.")
     ap.add_argument(
         "--open-interest-alignment",
-        choices=["fixed_delay", "causal_asof"],
+        choices=["fixed_delay", "causal_asof", "causal_asof_global"],
         default="fixed_delay",
         help="How to place open_interest on the replay timeline.",
+    )
+    ap.add_argument(
+        "--open-interest-calibrated-delay-ms",
+        type=int,
+        default=None,
+        help="Optional externally-calibrated OI availability delay floor (ms).",
     )
     ap.add_argument(
         "--open-interest-availability-quantile",
@@ -324,6 +330,9 @@ def main() -> int:
             include_open_interest=args.include_open_interest,
             include_liquidations=args.include_liquidations,
             open_interest_delay_ms=int(args.open_interest_delay_ms or 0),
+            open_interest_calibrated_delay_ms=(
+                None if args.open_interest_calibrated_delay_ms is None else int(args.open_interest_calibrated_delay_ms)
+            ),
             open_interest_alignment_mode=str(args.open_interest_alignment),  # type: ignore[arg-type]
             open_interest_availability_quantile=float(args.open_interest_availability_quantile),
             open_interest_min_delay_ms=int(args.open_interest_min_delay_ms or 0),
