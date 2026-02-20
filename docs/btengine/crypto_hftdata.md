@@ -92,12 +92,31 @@ O adapter faz:
 - orderbook: detecta (heuristica) e, se necessario, ordena por `final_update_id` para reconstruir mensagens coerentes (`iter_depth_updates`)
 - trades: detecta e, se necessario, ordena por `trade_time` (`iter_trades`)
 - mark_price: detecta e, se necessario, ordena por `event_time` (`iter_mark_price`)
+- ticker/liquidations/open_interest: mesmo principio (auto-sort quando necessario)
 
 Tradeoff:
 
 - a deteccao de ordenacao avalia row groups ao longo do arquivo (nao apenas o primeiro), para reduzir falso "ordenado"
 - ordenar costuma exigir ler o arquivo inteiro na memoria (por hora, no caso do orderbook)
 - isso e mais custoso, mas evita bugs de replay (mensagens quebradas / viagem no tempo)
+
+Mitigacao de memoria (novo):
+
+- os readers `iter_*_advanced(..., sort_row_limit=...)` aceitam limite de linhas
+  para proteger contra sort in-memory muito grande
+- default atual: `5_000_000` linhas
+- se exceder esse limite no caminho que exige sort, o reader levanta `MemoryError`
+  com orientacao para reduzir janela temporal ou pre-processar/parquet pre-ordenado
+
+Exemplos:
+
+```python
+from btengine.data.cryptohftdata.trades import iter_trades_advanced
+from btengine.data.cryptohftdata.orderbook import iter_depth_updates_advanced
+
+trades = iter_trades_advanced("trades.parquet", sort_mode="auto", sort_row_limit=2_000_000)
+depth = iter_depth_updates_advanced("orderbook_12.parquet", sort_mode="auto", sort_row_limit=1_000_000)
+```
 
 ## Horas faltantes (orderbook)
 

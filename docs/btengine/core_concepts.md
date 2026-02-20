@@ -46,6 +46,12 @@ No adapter CryptoHFTData:
 
 Se um stream nao estiver ordenado, o merge pode produzir "viagem no tempo" e quebrar invariantes do motor.
 
+No `BacktestEngine`, existe um modo opcional para bloquear isso imediatamente:
+
+- `EngineConfig.strict_event_time_monotonic=True`
+  - levanta erro se aparecer um evento com `event_time_ms` menor que o anterior
+  - util para fail-fast em pipelines de dados com risco de desordem
+
 Observacao sobre open interest:
 
 - modo recomendado: `open_interest_alignment_mode=causal_asof` (rolling past-only, sem olhar futuro)
@@ -67,9 +73,13 @@ Quando setados, o `build_day_stream()` fatia trades/orderbook/mark_price antes d
 
 - `btengine.engine.EngineConfig.trading_start_ms`
 - `btengine.engine.EngineConfig.trading_end_ms`
+- `btengine.engine.EngineConfig.trading_window_mode` (`entry_only` | `block_all`)
+- `btengine.engine.EngineConfig.allow_reducing_outside_trading_window`
 - `EngineContext.is_trading_time()`
 
 Nota: o engine bloqueia `ctx.broker.submit(...)` fora dessa janela (mas os callbacks ainda rodam para warmup/estado).
+- modo `entry_only`: bloqueia novas entradas e permite ordens redutoras (se `allow_reducing_outside_trading_window=True`)
+- modo `block_all`: bloqueia qualquer submit fora da janela
 
 Um padrao comum e:
 
@@ -99,3 +109,11 @@ No `BacktestEngine.run()` (`src/btengine/engine.py`):
 4) chama `strategy.on_event(event, ctx)` (se existir)
 
 Isso significa que dentro de `on_event` o `ctx.books[symbol]` ja reflete o evento aplicado.
+
+`EngineConfig.broker_time_mode` controla quando o broker processa latencias/cancelamentos (`on_time`):
+- `before_event`: antes de aplicar o evento
+- `after_event` (padrao): depois de aplicar o evento
+
+Observacao de guard estrito:
+- quando `BookGuardedBroker` trippa (mismatch/crossed/stale/etc), ordens pendentes
+  antigas do simbolo tambem sao invalidadas para evitar ativacao durante cooldown/warmup.

@@ -10,7 +10,12 @@ import pyarrow.fs as fs
 import pyarrow.parquet as pq
 
 from ...types import Liquidation
-from ._arrow import parquet_column_is_monotonic_non_decreasing, resolve_filesystem_and_path, resolve_path
+from ._arrow import (
+    ensure_in_memory_sort_within_row_limit,
+    parquet_column_is_monotonic_non_decreasing,
+    resolve_filesystem_and_path,
+    resolve_path,
+)
 from .paths import CryptoHftLayout
 
 
@@ -28,6 +33,7 @@ def iter_liquidations_advanced(
     *,
     filesystem: fs.FileSystem | None = None,
     sort_mode: Literal["auto", "always", "never"] = "auto",
+    sort_row_limit: int | None = 5_000_000,
 ) -> Iterator[Liquidation]:
     if filesystem is None:
         filesystem, resolved_path = resolve_filesystem_and_path(parquet_path)
@@ -68,6 +74,11 @@ def iter_liquidations_advanced(
     ]
 
     if needs_sort:
+        ensure_in_memory_sort_within_row_limit(
+            pf,
+            row_limit=sort_row_limit,
+            context="iter_liquidations_advanced",
+        )
         table = pf.read(columns=cols)
         for c in float_cols:
             table = table.set_column(table.schema.get_field_index(c), c, pc.cast(table[c], pa.float64()))

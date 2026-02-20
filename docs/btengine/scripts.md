@@ -5,7 +5,8 @@ Scripts live in `scripts/` and are intended to:
 - validate the S3 dataset (existence, schema, ranges)
 - replay data through `btengine` for sanity checks
 
-Strategy examples live in consumer repos (not in btengine).
+Simple/reference strategies are available in `btengine.strategies` and used by script entrypoints.
+Production strategies should still live in consumer repos.
 
 ## `validate_s3_dataset.py`
 
@@ -33,6 +34,7 @@ Notes:
 - reads `.env` from repo root (use `.env.example` as template)
 - does not print credentials
 - `--skip-missing` treats `FileNotFoundError` as "MISSING" and continues
+- empty parquet files are handled safely (no crash when min/max timestamps are null)
 
 ## `run_backtest_replay.py`
 
@@ -104,6 +106,7 @@ Purpose:
 - print basic stats:
   - round trips reconstructed from fills (wins/losses, net/gross, duration)
   - equity curve sampled on `mark_price` + max drawdown
+- strategy implementation: `btengine.strategies.EntryExitStrategy`
 
 Example:
 
@@ -122,6 +125,7 @@ Purpose:
   - `rule=state`: stay long if price>=MA, short if price<MA
 - execute market orders to reach target position
 - print PnL, fees, round trips and equity curve + max drawdown
+- strategy implementation: `btengine.strategies.MaCrossStrategy`
 
 Example:
 
@@ -138,6 +142,7 @@ Purpose:
 - validate temporal continuity per day
 - consolidate metrics and PnL into CSV
 - optional book guard (`--strict-book`) to reduce impact of bad data
+- keeps `include_trades=True` even for `ma_cross` com `price_source=mark` para validar consistencia do stream de trades
 
 Example (5 days, MA9 5m, full day):
 

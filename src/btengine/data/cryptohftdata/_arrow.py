@@ -56,3 +56,27 @@ def parquet_column_is_monotonic_non_decreasing(pf: pq.ParquetFile, column: str) 
         prev_last = last
 
     return True
+
+
+def ensure_in_memory_sort_within_row_limit(
+    pf: pq.ParquetFile,
+    *,
+    row_limit: int | None,
+    context: str,
+) -> None:
+    """Fail fast when an in-memory full-file sort would exceed a row limit."""
+
+    if row_limit is None:
+        return
+    limit = int(row_limit)
+    if limit <= 0:
+        return
+
+    rows = int(pf.metadata.num_rows or 0)
+    if rows <= limit:
+        return
+
+    raise MemoryError(
+        f"{context}: in-memory sort requires {rows} rows, exceeds limit={limit}. "
+        "Use a smaller time window or pre-sort parquet upstream."
+    )

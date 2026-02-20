@@ -10,6 +10,7 @@
   - maker: modelo aproximado de fila (queue ahead) preenchido via trade tape
 - portfolio e PnL realizado + funding (perpetuos)
 - adapter para o layout CryptoHFTData (Parquet em S3)
+- estrategias leves de referencia em `btengine.strategies` (para scripts e smoke tests)
 
 Objetivo: ser generico o suficiente para ser reutilizado como biblioteca em outros projetos/estrategias, sem acoplar a Binance/CCXT no core do motor.
 
@@ -28,6 +29,7 @@ O `btengine` foi organizado para ser importado como biblioteca, com baixo acopla
   - hoje: `btengine.data.cryptohftdata`
   - novos datasets/exchanges podem entrar como novos adapters, sem mudar o core
 - Scripts em `scripts/` sao exemplos/entrypoints, nao dependencia do core
+- Scripts reaproveitam `btengine.strategies` para setups simples (entry_exit e ma_cross)
 
 Guia dedicado para integrar em outro repositorio:
 
@@ -49,6 +51,8 @@ Ele ja inclui:
 - self-impact para taker (reduz profundidade do book in-memory)
 - modelo maker aproximado (fila + trade tape)
 - delays deterministicas opcionais de submit/cancel (para evitar otimismo)
+- guard de book com bloqueio de submits e invalidacao de pendentes apos trip
+- opcao de fail-fast temporal (`strict_event_time_monotonic`) no engine
 
 Mas ainda nao inclui matching engine completo ou overlay das nossas ordens no book.
 
@@ -70,6 +74,8 @@ Mas ainda nao inclui matching engine completo ou overlay das nossas ordens no bo
 - Replay/merge de streams: `src/btengine/replay.py`
 - Marketdata (L2 book): `src/btengine/marketdata/orderbook.py`
 - Execucao (orders/fill): `src/btengine/broker.py`, `src/btengine/execution/*`
+- Estrategias de exemplo: `src/btengine/strategies/*`
+- CLI helper compartilhado (strict book): `src/btengine/util/cli.py`
 - Adapter CryptoHFTData: `src/btengine/data/cryptohftdata/*`
 
 ## Desenvolvimento local
@@ -90,9 +96,10 @@ pytest -q
 - O repositorio `btengine` e privado.
 - Use SSH (`git@github.com:marcosarm/btengine.git`) ou um PAT.
 
-## Estrategias (repos externos)
+## Estrategias (package + repos externos)
 
-Estrategias completas vivem em repos consumidores.
+Este repositorio inclui apenas estrategias simples/referencia em `btengine.strategies`.
+Estrategias completas de producao continuam em repos consumidores.
 Exemplo: `C:\\4mti\\Projetos\\tbot_funding_arb`.
 
 ## Contexto

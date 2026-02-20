@@ -10,7 +10,12 @@ import pyarrow.fs as fs
 import pyarrow.parquet as pq
 
 from ...types import Trade
-from ._arrow import parquet_column_is_monotonic_non_decreasing, resolve_filesystem_and_path, resolve_path
+from ._arrow import (
+    ensure_in_memory_sort_within_row_limit,
+    parquet_column_is_monotonic_non_decreasing,
+    resolve_filesystem_and_path,
+    resolve_path,
+)
 from .paths import CryptoHftLayout
 
 
@@ -30,6 +35,7 @@ def iter_trades_advanced(
     *,
     filesystem: fs.FileSystem | None = None,
     sort_mode: Literal["auto", "always", "never"] = "auto",
+    sort_row_limit: int | None = 5_000_000,
 ) -> Iterator[Trade]:
     """Advanced variant with explicit sort control."""
 
@@ -58,6 +64,11 @@ def iter_trades_advanced(
         needs_sort = False
 
     if needs_sort:
+        ensure_in_memory_sort_within_row_limit(
+            pf,
+            row_limit=sort_row_limit,
+            context="iter_trades_advanced",
+        )
         table = pf.read(columns=cols)
 
         table = table.set_column(table.schema.get_field_index("price"), "price", pc.cast(table["price"], pa.float64()))

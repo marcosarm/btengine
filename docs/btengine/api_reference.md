@@ -35,6 +35,12 @@ Arquivo: `src/btengine/engine.py`
   - `tick_interval_ms: int`
   - `trading_start_ms: int | None`
   - `trading_end_ms: int | None`
+  - `strict_event_time_monotonic: bool` (quando `True`, regressao de `event_time_ms` gera erro)
+  - `trading_window_mode: Literal["entry_only", "block_all"]`
+  - `allow_reducing_outside_trading_window: bool`
+  - `broker_time_mode: Literal["before_event", "after_event"]`
+  - `book_guard: BookGuardConfig | None`
+  - `book_guard_symbol: str | None`
   - ticks: o primeiro tick e ancorado exatamente no timestamp do primeiro evento observado (sem "floor")
 - `EngineContext`
   - `now_ms: int`
@@ -46,6 +52,12 @@ Arquivo: `src/btengine/engine.py`
   - `liquidation: dict[str, Liquidation]`
   - `is_trading_time() -> bool`
   - `book(symbol) -> L2Book`
+
+Notas de execucao:
+- o engine encapsula `ctx.broker` com um proxy de janela de trading:
+  - fora da janela, `submit()` e bloqueado para entradas
+  - com `trading_window_mode="entry_only"` e `allow_reducing_outside_trading_window=True`, ordens redutoras continuam permitidas
+- `broker_time_mode` define se `broker.on_time(now_ms)` roda antes ou depois de aplicar cada evento
 
 ## Tipos de eventos
 
@@ -93,7 +105,29 @@ Arquivos:
     - params: `maker_fee_frac`, `taker_fee_frac`
     - params: `submit_latency_ms`, `cancel_latency_ms`
     - params: `maker_queue_ahead_factor`, `maker_queue_ahead_extra_qty`, `maker_trade_participation`
+    - `has_open_orders()` inclui ordens maker ativas + pendentes nao-canceladas
+    - `has_pending_orders(symbol: str | None = None) -> bool`
+    - `cancel_symbol_orders(symbol, cancel_active_makers=True, cancel_pending_submits=True)`
   - `Fill`
+
+## Book guard (opcional)
+
+Arquivos:
+
+- `src/btengine/book_guard.py`
+- `src/btengine/util/cli.py`
+
+Objetos:
+
+- `BookGuardConfig`
+- `BookGuardStats`
+- `BookGuardedBroker`
+- `add_strict_book_args(parser, ...)`
+- `strict_book_config_from_args(args) -> BookGuardConfig | None`
+
+Nota:
+- em um trip do guard, submits pendentes antigos do simbolo tambem sao invalidados
+  (nao ativam durante cooldown/warmup).
 
 ## Portfolio
 
@@ -113,16 +147,16 @@ Pacote: `src/btengine/analytics/`
 - `summarize_round_trips(trades: list[RoundTrip]) -> RoundTripSummary`
 - `max_drawdown(equity_curve: list[(time_ms, equity)]) -> float | None`
 
-## Estrategia de exemplo (repo externo)
+## Estrategias de referencia e externas
 
-Estrategias completas vivem em repos consumidores. Exemplo:
+No proprio pacote:
 
-- `C:\\4mti\\Projetos\\tbot_funding_arb\\funding\\basis_funding.py`
-  - `BasisFundingStrategy` (perp x future)
-  - basis por mid-price (`basis_signal_mid`)
-  - custo de execucao por impact price (`execution_cost_std_rev`)
-  - limiar dinamico (`dynamic_z_threshold`)
-  - filtros de liquidez/funding + maquina de estados (`flat`, `standard`, `reverse`)
+- `btengine.strategies.EntryExitStrategy`
+- `btengine.strategies.MaCrossStrategy`
+
+Para producao:
+
+- manter estrategias completas em repos consumidores (exemplo: `C:\\4mti\\Projetos\\tbot_funding_arb`)
 
 ## Adapter CryptoHFTData
 
@@ -167,13 +201,14 @@ Config:
   - `skip_missing_daily_files`
   - `stream_start_ms`, `stream_end_ms`
 
+Leitores avancados (`iter_*_advanced`):
+
+- `sort_mode`: `auto` | `always` | `never`
+- `sort_row_limit`: limite de seguranca para sort in-memory (default `5_000_000` linhas)
+  - se exceder, o reader levanta `MemoryError` com orientacao para reduzir janela ou pre-sort upstream
+
 ## Utilitarios
 
 Arquivo: `src/btengine/util/dotenv.py`
 
 - `load_dotenv(path, override=False) -> DotenvResult`
-
-Arquivo: `src/btengine/util/cli.py`
-
-- `add_strict_book_args(parser, ...)`
-- `strict_book_config_from_args(args) -> BookGuardConfig | None`

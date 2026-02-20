@@ -7,6 +7,7 @@ Goals:
 - reusable engine, strategy-agnostic
 - stable public API for consumer repos
 - realistic-enough fills (taker via L2 consumption, maker via queue model)
+- robust replay controls (strict book guard + optional strict event-time monotonic checks)
 
 What it is not (yet):
 - full exchange-grade matching engine
@@ -84,11 +85,20 @@ Equivalent deterministic fallback:
 - `src/btengine/replay.py`
 - `src/btengine/marketdata/orderbook.py`
 - `src/btengine/broker.py`, `src/btengine/execution/*`
+- `src/btengine/strategies/*` (sample/reference strategies used by scripts)
+- `src/btengine/util/cli.py` (shared CLI options for strict book guard)
 - `src/btengine/data/cryptohftdata/*`
 
-## Strategies live elsewhere
+## Strategies
 
-Example consumer repo: `C:\4mti\Projetos\tbot_funding_arb`.
+This repo includes lightweight strategy implementations for tests/examples:
+- `EntryExitStrategy`
+- `MaCrossStrategy`
+
+They are available in `btengine.strategies` and used by script entrypoints.
+
+Complex production strategies should still live in consumer repos, for example:
+`C:\4mti\Projetos\tbot_funding_arb`.
 
 ## Context
 

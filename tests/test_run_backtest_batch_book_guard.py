@@ -1,36 +1,18 @@
 from __future__ import annotations
 
-import importlib
-import sys
-from pathlib import Path
-
+from btengine.book_guard import BookGuardConfig, BookGuardedBroker
 from btengine.broker import SimBroker
 from btengine.execution.orders import Order
 from btengine.marketdata import L2Book
 from btengine.types import DepthUpdate
 
 
-def _load_batch_module():
-    root = Path(__file__).resolve().parents[1]
-    scripts_dir = root / "scripts"
-    src_dir = root / "src"
-
-    if str(scripts_dir) not in sys.path:
-        sys.path.insert(0, str(scripts_dir))
-    if str(src_dir) not in sys.path:
-        sys.path.insert(0, str(src_dir))
-
-    return importlib.import_module("run_backtest_batch")
-
-
 def test_book_guarded_broker_blocks_submit_when_book_missing_side():
-    m = _load_batch_module()
-
     inner = SimBroker(maker_fee_frac=0.0, taker_fee_frac=0.0)
-    guard = m.BookGuardedBroker(
+    guard = BookGuardedBroker(
         inner,
         symbol="BTCUSDT",
-        cfg=m.BookGuardConfig(
+        cfg=BookGuardConfig(
             enabled=True,
             max_staleness_ms=0,
             cooldown_ms=0,
@@ -53,13 +35,11 @@ def test_book_guarded_broker_blocks_submit_when_book_missing_side():
 
 
 def test_book_guarded_broker_resets_book_on_prev_final_id_mismatch():
-    m = _load_batch_module()
-
     inner = SimBroker(maker_fee_frac=0.0, taker_fee_frac=0.0)
-    guard = m.BookGuardedBroker(
+    guard = BookGuardedBroker(
         inner,
         symbol="BTCUSDT",
-        cfg=m.BookGuardConfig(
+        cfg=BookGuardConfig(
             enabled=True,
             cooldown_ms=0,
             warmup_depth_updates=0,

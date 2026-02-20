@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from btengine.analytics import max_drawdown, round_trips_from_fills, summarize_round_trips
-from btengine.book_guard import BookGuardConfig, BookGuardStats, BookGuardedBroker
+from btengine.book_guard import BookGuardStats
 from btengine.broker import SimBroker
 from btengine.data.cryptohftdata import CryptoHftDayConfig, CryptoHftLayout, S3Config, build_day_stream, make_s3_filesystem
 from btengine.engine import BacktestEngine, EngineConfig, EngineContext
@@ -388,15 +388,11 @@ def main() -> int:
         err = ""
 
         try:
-            include_trades = True
-            if args.setup == "ma_cross" and args.price_source == "mark":
-                # Trades aren't required for signals, but keeping it True validates
-                # the stream too (more coverage).
-                include_trades = True
-
             cfg = CryptoHftDayConfig(
                 exchange=str(args.exchange),
-                include_trades=bool(include_trades),
+                # Keep trades enabled for consistency checks even when signals
+                # come from mark-price.
+                include_trades=True,
                 include_orderbook=True,
                 include_mark_price=True,
                 include_ticker=bool(args.include_ticker),

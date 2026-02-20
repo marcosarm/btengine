@@ -6,6 +6,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from btengine.data.cryptohftdata import iter_mark_price
+from btengine.data.cryptohftdata.mark_price import iter_mark_price_advanced
 
 
 def test_iter_mark_price_sorts_and_casts(tmp_path: Path) -> None:
@@ -88,3 +89,29 @@ def test_iter_mark_price_detects_disorder_in_later_row_group(tmp_path: Path) -> 
 
     out = list(iter_mark_price(p))
     assert [e.event_time_ms for e in out] == [1_000, 1_500, 2_000]
+
+
+def test_iter_mark_price_sort_row_limit_blocks_large_in_memory_sort(tmp_path: Path) -> None:
+    p = tmp_path / "mark_price_limit.parquet"
+    rows = [
+        (2, 2_000, "BTCUSDT", "101.0", "100.5", "0.01", 2_000),
+        (1, 1_000, "BTCUSDT", "99.0", "99.5", "0.02", 1_000),
+    ]
+    table = pa.table(
+        {
+            "received_time": pa.array([r[0] for r in rows], type=pa.int64()),
+            "event_time": pa.array([r[1] for r in rows], type=pa.int64()),
+            "symbol": pa.array([r[2] for r in rows], type=pa.string()),
+            "mark_price": pa.array([r[3] for r in rows], type=pa.string()),
+            "index_price": pa.array([r[4] for r in rows], type=pa.string()),
+            "funding_rate": pa.array([r[5] for r in rows], type=pa.string()),
+            "next_funding_time": pa.array([r[6] for r in rows], type=pa.int64()),
+        }
+    )
+    pq.write_table(table, p)
+
+    try:
+        list(iter_mark_price_advanced(p, sort_mode="always", sort_row_limit=1))
+        assert False, "expected MemoryError due to sort_row_limit"
+    except MemoryError as e:
+        assert "iter_mark_price_advanced" in str(e)

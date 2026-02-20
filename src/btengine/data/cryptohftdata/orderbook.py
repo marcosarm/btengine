@@ -12,7 +12,7 @@ import pyarrow.fs as fs
 import pyarrow.parquet as pq
 
 from ...types import DepthUpdate
-from ._arrow import resolve_filesystem_and_path, resolve_path
+from ._arrow import ensure_in_memory_sort_within_row_limit, resolve_filesystem_and_path, resolve_path
 from .paths import CryptoHftLayout
 
 
@@ -93,6 +93,7 @@ def iter_depth_updates_advanced(
     *,
     filesystem: fs.FileSystem | None = None,
     sort_mode: Literal["auto", "always", "never"] = "auto",
+    sort_row_limit: int | None = 5_000_000,
 ) -> Iterator[DepthUpdate]:
     """Iterate DepthUpdate messages, optionally sorting by `final_update_id`.
 
@@ -132,6 +133,11 @@ def iter_depth_updates_advanced(
         needs_sort = False
 
     if needs_sort:
+        ensure_in_memory_sort_within_row_limit(
+            pf,
+            row_limit=sort_row_limit,
+            context="iter_depth_updates_advanced",
+        )
         yield from _iter_depth_updates_sorted(pf, cols=cols)
     else:
         yield from _iter_depth_updates_streaming(pf, cols=cols)

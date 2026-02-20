@@ -44,6 +44,7 @@ S3_PREFIX=hftdata
 # Optional (if you are not using default AWS credentials chain):
 AWS_ACCESS_KEY_ID=...
 AWS_SECRET_ACCESS_KEY=...
+AWS_SESSION_TOKEN=...
 ```
 
 ## 3) Validate dataset quickly (S3)
@@ -64,6 +65,15 @@ python scripts\\run_backtest_replay.py --day 2025-07-01 --symbols BTCUSDT --mark
 
 The script derives a `[start,end)` window from `--hours` and applies it to
 trades/orderbook/mark_price via `CryptoHftDayConfig.stream_start_ms/stream_end_ms`.
+
+If your data pipeline may have temporal regressions, enable strict mode in code:
+
+```python
+engine = BacktestEngine(
+    config=EngineConfig(tick_interval_ms=1000, strict_event_time_monotonic=True),
+    broker=broker,
+)
+```
 
 ## 4b) Simple entry/exit setup (PnL sanity check)
 
@@ -104,9 +114,13 @@ Deterministic equivalent:
 python scripts\\run_backtest_replay.py --day 2025-07-01 --symbols BTCUSDT --mark-price-symbols BTCUSDT --hours 12-12 --include-ticker --include-open-interest --include-liquidations --strict-book --open-interest-alignment fixed_delay --open-interest-delay-ms 300000
 ```
 
-## 4f) Strategy examples (external)
+## 4f) Strategy examples (package + external)
 
-Full strategies live in consumer repos, not in btengine.
+This repo includes lightweight/reference strategies in `btengine.strategies`:
+- `EntryExitStrategy` (used by `run_backtest_entry_exit.py`)
+- `MaCrossStrategy` (used by `run_backtest_ma_cross.py`)
+
+Full production strategies should still live in consumer repos.
 Example: `C:\\4mti\\Projetos\\tbot_funding_arb`.
 
 ## 5) Minimal code example
