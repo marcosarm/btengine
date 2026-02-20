@@ -78,7 +78,14 @@ def iter_mark_price_advanced(
         table = table.set_column(
             table.schema.get_field_index("funding_rate"), "funding_rate", pc.cast(table["funding_rate"], pa.float64())
         )
-        sort_idx = pc.sort_indices(table["event_time"])
+        sort_idx = pc.sort_indices(
+            table,
+            sort_keys=[
+                ("event_time", "ascending"),
+                ("received_time", "ascending"),
+                ("next_funding_time", "ascending"),
+            ],
+        )
         table = table.take(sort_idx)
 
         received = table["received_time"].to_numpy(zero_copy_only=False)

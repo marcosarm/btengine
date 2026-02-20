@@ -41,6 +41,7 @@ Arquivo: `src/btengine/engine.py`
   - `broker_time_mode: Literal["before_event", "after_event"]`
   - `book_guard: BookGuardConfig | None`
   - `book_guard_symbol: str | None`
+  - `emit_final_tick: bool` (quando `False`, desabilita o tick final apos consumir o stream)
   - ticks: o primeiro tick e ancorado exatamente no timestamp do primeiro evento observado (sem "floor")
 - `EngineContext`
   - `now_ms: int`
@@ -199,6 +200,9 @@ Config:
   - `open_interest_alignment_mode` (`fixed_delay`, `causal_asof`, `causal_asof_global`)
   - `open_interest_availability_quantile`
   - `open_interest_min_delay_ms`, `open_interest_max_delay_ms`
+  - `open_interest_global_row_limit` (limite de linhas materializadas no modo `causal_asof_global`; `None`/<=0 desabilita)
+  - `open_interest_sort_mode` (`auto`, `always`, `never`)
+  - `open_interest_sort_row_limit` (limite opcional de sort do arquivo de OI; se `None`, usa default/env dos readers)
   - alinhamento opcional dos demais streams:
     - `stream_alignment_mode` (`none`, `fixed_delay`, `causal_asof`, `causal_asof_global`)
     - `stream_alignment_quantile`

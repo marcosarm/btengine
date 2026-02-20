@@ -5,9 +5,12 @@ from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
 
 from btengine.data.cryptohftdata import iter_open_interest, iter_open_interest_for_day
+from btengine.data.cryptohftdata import open_interest as open_interest_mod
 from btengine.data.cryptohftdata.open_interest import iter_open_interest_advanced
+from btengine.types import OpenInterest
 
 
 def test_iter_open_interest_sorts_and_casts(tmp_path: Path) -> None:
@@ -58,6 +61,32 @@ def test_iter_open_interest_detects_disorder_in_later_row_group(tmp_path: Path) 
 
     out = list(iter_open_interest(p))
     assert [e.timestamp_ms for e in out] == [1_000, 1_500, 2_000]
+
+
+def test_iter_open_interest_sorts_equal_timestamp_by_received_time(tmp_path: Path) -> None:
+    p = tmp_path / "open_interest_tie.parquet"
+    rows = [
+        (3_000_000_000_000_000_000, "BTCUSDT", "12.0", "1200.0", 2_000),
+        (2_000_000_000_000_000_000, "BTCUSDT", "10.0", "1000.0", 1_000),
+        (1_000_000_000_000_000_000, "BTCUSDT", "11.0", "1100.0", 1_000),
+    ]
+    table = pa.table(
+        {
+            "received_time": pa.array([r[0] for r in rows], type=pa.int64()),
+            "symbol": pa.array([r[1] for r in rows], type=pa.string()),
+            "sum_open_interest": pa.array([r[2] for r in rows], type=pa.string()),
+            "sum_open_interest_value": pa.array([r[3] for r in rows], type=pa.string()),
+            "timestamp": pa.array([r[4] for r in rows], type=pa.int64()),
+        }
+    )
+    pq.write_table(table, p)
+
+    out = list(iter_open_interest(p))
+    assert [e.received_time_ns for e in out] == [
+        1_000_000_000_000_000_000,
+        2_000_000_000_000_000_000,
+        3_000_000_000_000_000_000,
+    ]
 
 
 class _DummyLayout:
@@ -126,3 +155,75 @@ def test_iter_open_interest_sort_row_limit_blocks_large_in_memory_sort(tmp_path:
         assert False, "expected MemoryError due to sort_row_limit"
     except MemoryError as e:
         assert "iter_open_interest_advanced" in str(e)
+
+
+def test_iter_open_interest_for_day_stops_after_day_window_when_ordered(monkeypatch) -> None:
+    d = date(2025, 7, 1)
+    day_start_ms = int(datetime(d.year, d.month, d.day, tzinfo=timezone.utc).timestamp() * 1000)
+    day_end_ms = day_start_ms + 86_400_000
+
+    def _oi(ts_ms: int) -> OpenInterest:
+        return OpenInterest(
+            received_time_ns=int(ts_ms) * 1_000_000,
+            event_time_ms=int(ts_ms),
+            timestamp_ms=int(ts_ms),
+            symbol="BTCUSDT",
+            sum_open_interest=1.0,
+            sum_open_interest_value=1.0,
+        )
+
+    def _fake_iter_open_interest_advanced(*args, **kwargs):
+        yield _oi(day_start_ms + 1_000)
+        yield _oi(day_end_ms + 1_000)
+        raise AssertionError("iterator should stop once timestamp is past day_end in ordered mode")
+
+    monkeypatch.setattr(open_interest_mod, "iter_open_interest_advanced", _fake_iter_open_interest_advanced)
+
+    out = list(
+        open_interest_mod._iter_open_interest_for_day_from_uri(
+            "ignored.parquet",
+            day=d,
+            filesystem=None,
+            sort_mode="auto",
+            sort_row_limit=None,
+        )
+    )
+    assert [e.timestamp_ms for e in out] == [day_start_ms + 1_000]
+
+
+def test_iter_open_interest_for_day_propagates_sort_row_limit(tmp_path: Path) -> None:
+    p = tmp_path / "open_interest.parquet"
+    rows = [
+        (2, "BTCUSDT", "10.0", "1000.0", 2_000),
+        (1, "BTCUSDT", "11.0", "1100.0", 1_000),
+    ]
+    table = pa.table(
+        {
+            "received_time": pa.array([r[0] for r in rows], type=pa.int64()),
+            "symbol": pa.array([r[1] for r in rows], type=pa.string()),
+            "sum_open_interest": pa.array([r[2] for r in rows], type=pa.string()),
+            "sum_open_interest_value": pa.array([r[3] for r in rows], type=pa.string()),
+            "timestamp": pa.array([r[4] for r in rows], type=pa.int64()),
+        }
+    )
+    pq.write_table(table, p)
+
+    class _Layout:
+        def __init__(self, path: Path) -> None:
+            self.path = path
+
+        def open_interest(self, *, exchange: str, symbol: str, day: date) -> str:
+            return str(self.path)
+
+    with pytest.raises(MemoryError, match="iter_open_interest_advanced"):
+        list(
+            iter_open_interest_for_day(
+                _Layout(p),
+                exchange="binance_futures",
+                symbol="BTCUSDT",
+                day=date(2025, 7, 1),
+                filesystem=None,
+                sort_mode="always",
+                sort_row_limit=1,
+            )
+        )

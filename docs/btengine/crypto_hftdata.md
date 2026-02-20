@@ -142,7 +142,13 @@ O adapter `iter_open_interest_for_day(...)`:
 
 - tenta `open_interest.parquet` e faz fallback para `open_interest_parcial.parquet` se necessario
 - filtra as linhas para o dia solicitado (UTC) com base na coluna `timestamp`
-- ordena por `timestamp` apos filtrar
+- usa `iter_open_interest_advanced(...)` (streaming) e evita `pf.read()` incondicional
+- quando `sort_mode` exige sort, aplica guard de memoria via `sort_row_limit`
+
+No `build_day_stream(...)`, os knobs de OI para sort sao expostos em `CryptoHftDayConfig`:
+
+- `open_interest_sort_mode` (`auto`, `always`, `never`)
+- `open_interest_sort_row_limit` (`None` => usa default/env dos readers)
 
 Para evitar lookahead, voce pode atrasar a disponibilidade do snapshot via `CryptoHftDayConfig.open_interest_delay_ms` (ver `docs/btengine/scripts.md`).
 

@@ -78,7 +78,14 @@ def iter_trades_advanced(
             table.schema.get_field_index("quantity"), "quantity", pc.cast(table["quantity"], pa.float64())
         )
 
-        sort_idx = pc.sort_indices(table["trade_time"])
+        sort_idx = pc.sort_indices(
+            table,
+            sort_keys=[
+                ("trade_time", "ascending"),
+                ("trade_id", "ascending"),
+                ("received_time", "ascending"),
+            ],
+        )
         table = table.take(sort_idx)
 
         received = table["received_time"].to_numpy(zero_copy_only=False)

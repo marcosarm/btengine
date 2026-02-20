@@ -209,6 +209,43 @@ def test_engine_ticks_anchor_to_first_event_time():
     assert strat.ticks == [1_500, 2_500, 3_500]
 
 
+def test_engine_can_disable_final_tick():
+    engine = BacktestEngine(
+        config=EngineConfig(tick_interval_ms=1000, emit_final_tick=False),
+        broker=SimBroker(maker_fee_frac=0.0, taker_fee_frac=0.0),
+    )
+
+    events = [
+        DepthUpdate(
+            received_time_ns=0,
+            event_time_ms=1_500,
+            transaction_time_ms=1_500,
+            symbol="BTCUSDT",
+            first_update_id=1,
+            final_update_id=1,
+            prev_final_update_id=0,
+            bid_updates=[(99.0, 10.0)],
+            ask_updates=[(100.0, 10.0)],
+        ),
+        DepthUpdate(
+            received_time_ns=0,
+            event_time_ms=2_600,
+            transaction_time_ms=2_600,
+            symbol="BTCUSDT",
+            first_update_id=2,
+            final_update_id=2,
+            prev_final_update_id=1,
+            bid_updates=[(99.0, 10.0)],
+            ask_updates=[(100.0, 10.0)],
+        ),
+    ]
+
+    strat = _TickRecorder()
+    engine.run(events, strategy=strat)
+
+    assert strat.ticks == [1_500, 2_500]
+
+
 class _EntryThenForceCloseOnEnd:
     def on_event(self, event: object, ctx) -> None:
         if isinstance(event, DepthUpdate) and event.event_time_ms == 1_000:

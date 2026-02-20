@@ -147,6 +147,39 @@ def test_iter_depth_updates_detects_disorder_in_later_row_group(tmp_path: Path) 
     assert [u.final_update_id for u in updates] == [9, 10, 11]
 
 
+def test_iter_depth_updates_detects_final_id_reentry_after_change(tmp_path: Path) -> None:
+    p = tmp_path / "orderbook_reentry.parquet"
+
+    # final_update_id 10 appears, then 11, then 10 again later.
+    rows = [
+        (1, 1_000, 999, "BTCUSDT", "update", 1, 10, 9, "bid", "100.0", "1.0"),
+        (1, 1_000, 999, "BTCUSDT", "update", 1, 10, 9, "ask", "101.0", "1.0"),
+        (2, 1_001, 1_000, "BTCUSDT", "update", 11, 11, 10, "bid", "100.5", "1.0"),
+        (2, 1_001, 1_000, "BTCUSDT", "update", 11, 11, 10, "ask", "101.5", "1.0"),
+        (3, 1_002, 1_001, "BTCUSDT", "update", 12, 10, 9, "bid", "99.5", "1.0"),
+        (3, 1_002, 1_001, "BTCUSDT", "update", 12, 10, 9, "ask", "100.5", "1.0"),
+    ]
+    table = pa.table(
+        {
+            "received_time": pa.array([r[0] for r in rows], type=pa.int64()),
+            "event_time": pa.array([r[1] for r in rows], type=pa.int64()),
+            "transaction_time": pa.array([r[2] for r in rows], type=pa.int64()),
+            "symbol": pa.array([r[3] for r in rows], type=pa.string()),
+            "event_type": pa.array([r[4] for r in rows], type=pa.string()),
+            "first_update_id": pa.array([r[5] for r in rows], type=pa.int64()),
+            "final_update_id": pa.array([r[6] for r in rows], type=pa.int64()),
+            "prev_final_update_id": pa.array([r[7] for r in rows], type=pa.int64()),
+            "side": pa.array([r[8] for r in rows], type=pa.string()),
+            "price": pa.array([r[9] for r in rows], type=pa.string()),
+            "quantity": pa.array([r[10] for r in rows], type=pa.string()),
+        }
+    )
+    pq.write_table(table, p, row_group_size=2)
+
+    updates = list(iter_depth_updates(p))
+    assert [u.final_update_id for u in updates] == [10, 11]
+
+
 def test_iter_depth_updates_sort_row_limit_blocks_large_in_memory_sort(tmp_path: Path) -> None:
     p = tmp_path / "orderbook_limit.parquet"
     rows = [
@@ -175,3 +208,36 @@ def test_iter_depth_updates_sort_row_limit_blocks_large_in_memory_sort(tmp_path:
         assert False, "expected MemoryError due to sort_row_limit"
     except MemoryError as e:
         assert "iter_depth_updates_advanced" in str(e)
+
+
+def test_iter_depth_updates_sorted_preserves_intra_final_id_row_order(tmp_path: Path) -> None:
+    p = tmp_path / "orderbook_stable_rows.parquet"
+
+    # final_update_id=10 rows are interleaved with id=11 and include repeated
+    # updates at the same price where row order matters.
+    rows = [
+        (1, 1_000, 999, "BTCUSDT", "update", 1, 10, 9, "bid", "100.0", "1.0"),
+        (2, 1_001, 1_000, "BTCUSDT", "update", 11, 11, 10, "ask", "101.0", "1.0"),
+        (3, 1_002, 1_001, "BTCUSDT", "update", 1, 10, 9, "bid", "100.0", "2.0"),
+        (4, 1_003, 1_002, "BTCUSDT", "update", 11, 11, 10, "bid", "99.0", "1.0"),
+    ]
+    table = pa.table(
+        {
+            "received_time": pa.array([r[0] for r in rows], type=pa.int64()),
+            "event_time": pa.array([r[1] for r in rows], type=pa.int64()),
+            "transaction_time": pa.array([r[2] for r in rows], type=pa.int64()),
+            "symbol": pa.array([r[3] for r in rows], type=pa.string()),
+            "event_type": pa.array([r[4] for r in rows], type=pa.string()),
+            "first_update_id": pa.array([r[5] for r in rows], type=pa.int64()),
+            "final_update_id": pa.array([r[6] for r in rows], type=pa.int64()),
+            "prev_final_update_id": pa.array([r[7] for r in rows], type=pa.int64()),
+            "side": pa.array([r[8] for r in rows], type=pa.string()),
+            "price": pa.array([r[9] for r in rows], type=pa.string()),
+            "quantity": pa.array([r[10] for r in rows], type=pa.string()),
+        }
+    )
+    pq.write_table(table, p)
+
+    updates = list(iter_depth_updates(p))
+    assert [u.final_update_id for u in updates] == [10, 11]
+    assert updates[0].bid_updates == [(100.0, 1.0), (100.0, 2.0)]

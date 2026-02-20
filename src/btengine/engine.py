@@ -39,6 +39,7 @@ class EngineConfig:
     broker_time_mode: Literal["before_event", "after_event"] = "after_event"
     book_guard: BookGuardConfig | None = None
     book_guard_symbol: str | None = None
+    emit_final_tick: bool = True
 
 
 @dataclass(slots=True)
@@ -258,7 +259,7 @@ class BacktestEngine:
                 on_event(ev, ctx)
 
         # One last tick at the end so strategies can cleanup on grid boundaries.
-        if next_tick_ms is not None and callable(on_tick):
+        if next_tick_ms is not None and callable(on_tick) and bool(self.config.emit_final_tick):
             ctx.now_ms = next_tick_ms
             ctx.broker.on_time(next_tick_ms)
             on_tick(next_tick_ms, ctx)

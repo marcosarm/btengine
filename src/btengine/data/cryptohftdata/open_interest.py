@@ -77,7 +77,13 @@ def iter_open_interest_advanced(
             pc.cast(table["sum_open_interest_value"], pa.float64()),
         )
 
-        sort_idx = pc.sort_indices(table["timestamp"])
+        sort_idx = pc.sort_indices(
+            table,
+            sort_keys=[
+                ("timestamp", "ascending"),
+                ("received_time", "ascending"),
+            ],
+        )
         table = table.take(sort_idx)
 
         received = table["received_time"].to_numpy(zero_copy_only=False)
@@ -125,68 +131,35 @@ def _iter_open_interest_for_day_from_uri(
     *,
     day: date,
     filesystem: fs.FileSystem | None,
+    sort_mode: Literal["auto", "always", "never"] = "auto",
+    sort_row_limit: int | None = None,
 ) -> Iterator[OpenInterest]:
-    """Read an open-interest file and filter to the requested UTC day.
+    """Read open-interest events and filter to one UTC day.
 
-    Some datasets may store multi-day responses in an `open_interest_parcial.parquet`.
-    This helper guarantees day filtering and sorting.
+    Uses the streaming iterator path and avoids unconditional full-file
+    materialization. When sorting is required (`sort_mode=auto/always`),
+    the underlying reader applies row-limit guards.
     """
 
     day_start_ms = int(datetime(day.year, day.month, day.day, tzinfo=timezone.utc).timestamp() * 1000)
     day_end_ms = day_start_ms + 86_400_000
+    ordered = str(sort_mode) != "never"
 
-    if filesystem is None:
-        filesystem, resolved_path = resolve_filesystem_and_path(parquet_uri)
-    else:
-        resolved_path = resolve_path(parquet_uri)
-
-    pf = pq.ParquetFile(resolved_path, filesystem=filesystem)
-    cols = [
-        "received_time",
-        "timestamp",
-        "symbol",
-        "sum_open_interest",
-        "sum_open_interest_value",
-    ]
-
-    table = pf.read(columns=cols)
-    table = table.set_column(
-        table.schema.get_field_index("sum_open_interest"),
-        "sum_open_interest",
-        pc.cast(table["sum_open_interest"], pa.float64()),
+    stream = iter_open_interest_advanced(
+        parquet_uri,
+        filesystem=filesystem,
+        sort_mode=sort_mode,
+        sort_row_limit=sort_row_limit,
     )
-    table = table.set_column(
-        table.schema.get_field_index("sum_open_interest_value"),
-        "sum_open_interest_value",
-        pc.cast(table["sum_open_interest_value"], pa.float64()),
-    )
-
-    m0 = pc.greater_equal(table["timestamp"], pa.scalar(day_start_ms, pa.int64()))
-    m1 = pc.less(table["timestamp"], pa.scalar(day_end_ms, pa.int64()))
-    mask = pc.and_(m0, m1)
-    table = table.filter(mask)
-
-    # Sort by timestamp after filtering.
-    if table.num_rows:
-        sort_idx = pc.sort_indices(table["timestamp"])
-        table = table.take(sort_idx)
-
-    received = table["received_time"].to_numpy(zero_copy_only=False)
-    timestamp = table["timestamp"].to_numpy(zero_copy_only=False)
-    symbol = table["symbol"].to_numpy(zero_copy_only=False)
-    sum_oi = table["sum_open_interest"].to_numpy(zero_copy_only=False)
-    sum_oi_val = table["sum_open_interest_value"].to_numpy(zero_copy_only=False)
-
-    for i in range(len(received)):
-        ts = int(timestamp[i])
-        yield OpenInterest(
-            received_time_ns=int(received[i]),
-            event_time_ms=ts,
-            timestamp_ms=ts,
-            symbol=str(symbol[i]),
-            sum_open_interest=float(sum_oi[i]),
-            sum_open_interest_value=float(sum_oi_val[i]),
-        )
+    for ev in stream:
+        ts = int(ev.timestamp_ms)
+        if ts < day_start_ms:
+            continue
+        if ts >= day_end_ms:
+            if ordered:
+                break
+            continue
+        yield ev
 
 
 def iter_open_interest_for_day(
@@ -196,14 +169,28 @@ def iter_open_interest_for_day(
     symbol: str,
     day: date,
     filesystem: fs.FileSystem | None = None,
+    sort_mode: Literal["auto", "always", "never"] = "auto",
+    sort_row_limit: int | None = None,
 ) -> Iterator[OpenInterest]:
     uri = layout.open_interest(exchange=exchange, symbol=symbol, day=day)
     try:
-        yield from _iter_open_interest_for_day_from_uri(uri, day=day, filesystem=filesystem)
+        yield from _iter_open_interest_for_day_from_uri(
+            uri,
+            day=day,
+            filesystem=filesystem,
+            sort_mode=sort_mode,
+            sort_row_limit=sort_row_limit,
+        )
     except FileNotFoundError:
         # Fallback: some datasets store multi-day results under this name.
         if str(uri).endswith("/open_interest.parquet"):
             alt = str(uri)[: -len("open_interest.parquet")] + "open_interest_parcial.parquet"
         else:
             alt = str(uri).replace("open_interest.parquet", "open_interest_parcial.parquet")
-        yield from _iter_open_interest_for_day_from_uri(alt, day=day, filesystem=filesystem)
+        yield from _iter_open_interest_for_day_from_uri(
+            alt,
+            day=day,
+            filesystem=filesystem,
+            sort_mode=sort_mode,
+            sort_row_limit=sort_row_limit,
+        )

@@ -65,6 +65,31 @@ def test_iter_trades_sorts_out_of_order_by_trade_time(tmp_path: Path) -> None:
     assert [e.trade_id for e in out] == [19, 20]
 
 
+def test_iter_trades_sorts_equal_trade_time_by_trade_id(tmp_path: Path) -> None:
+    p = tmp_path / "trades_tie.parquet"
+    rows = [
+        (3, 0, 2_000, "BTCUSDT", 30, "103.0", "0.3", True),
+        (2, 0, 1_000, "BTCUSDT", 20, "102.0", "0.2", False),
+        (1, 0, 1_000, "BTCUSDT", 10, "101.0", "0.1", True),
+    ]
+    table = pa.table(
+        {
+            "received_time": pa.array([r[0] for r in rows], type=pa.int64()),
+            "event_time": pa.array([r[1] for r in rows], type=pa.int64()),
+            "trade_time": pa.array([r[2] for r in rows], type=pa.int64()),
+            "symbol": pa.array([r[3] for r in rows], type=pa.string()),
+            "trade_id": pa.array([r[4] for r in rows], type=pa.int64()),
+            "price": pa.array([r[5] for r in rows], type=pa.string()),
+            "quantity": pa.array([r[6] for r in rows], type=pa.string()),
+            "is_buyer_maker": pa.array([r[7] for r in rows], type=pa.bool_()),
+        }
+    )
+    pq.write_table(table, p)
+
+    out = list(iter_trades(p))
+    assert [e.trade_id for e in out] == [10, 20, 30]
+
+
 def test_iter_trades_detects_disorder_in_later_row_group(tmp_path: Path) -> None:
     p = tmp_path / "trades_rg.parquet"
 

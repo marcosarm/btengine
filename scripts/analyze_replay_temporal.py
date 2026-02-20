@@ -263,6 +263,12 @@ def main() -> int:
         default=None,
         help="Upper bound for effective OI delay (ms).",
     )
+    ap.add_argument(
+        "--open-interest-global-row-limit",
+        type=int,
+        default=2_000_000,
+        help="Max rows materialized for open_interest alignment mode=causal_asof_global (<=0 disables).",
+    )
     ap.add_argument("--skip-missing", action="store_true")
     ap.add_argument("--start-utc", default=None)
     ap.add_argument("--end-utc", default=None)
@@ -352,6 +358,11 @@ def main() -> int:
             open_interest_min_delay_ms=int(args.open_interest_min_delay_ms or 0),
             open_interest_max_delay_ms=(
                 None if args.open_interest_max_delay_ms is None else int(args.open_interest_max_delay_ms)
+            ),
+            open_interest_global_row_limit=(
+                None
+                if int(args.open_interest_global_row_limit or 0) <= 0
+                else int(args.open_interest_global_row_limit)
             ),
             **stream_alignment_kwargs_from_args(args),
             orderbook_hours=hours,

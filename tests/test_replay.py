@@ -99,3 +99,25 @@ def test_merge_event_streams_tie_breaker_without_received_time_uses_event_metada
         (1_000, "s2_early_id"),
         (1_000, "s1_late_id"),
     ]
+
+
+@dataclass(frozen=True)
+class _EvTypeZ:
+    event_time_ms: int
+    tag: str
+
+
+@dataclass(frozen=True)
+class _EvTypeA:
+    event_time_ms: int
+    tag: str
+
+
+def test_merge_event_streams_same_timestamp_no_type_bias_falls_back_to_stream_order():
+    s1 = [_EvTypeZ(1_000, "s1_first")]
+    s2 = [_EvTypeA(1_000, "s2_second")]
+    out = list(merge_event_streams(s1, s2))
+    assert [(e.event_time_ms, e.tag) for e in out] == [
+        (1_000, "s1_first"),
+        (1_000, "s2_second"),
+    ]

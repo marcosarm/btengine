@@ -35,6 +35,9 @@ class CryptoHftDayConfig:
     open_interest_availability_quantile: float = 0.8
     open_interest_min_delay_ms: int = 0
     open_interest_max_delay_ms: int | None = None
+    open_interest_global_row_limit: int | None = 2_000_000
+    open_interest_sort_mode: Literal["auto", "always", "never"] = "auto"
+    open_interest_sort_row_limit: int | None = None
     # Optional availability-time alignment for non-OI streams.
     # This helps reduce cross-stream clock mismatch (trade/book/mark/ticker).
     stream_alignment_mode: Literal["none", "fixed_delay", "causal_asof", "causal_asof_global"] = "none"
@@ -105,8 +108,32 @@ def _resolve_open_interest_base_delay(*, cfg: CryptoHftDayConfig, fixed_delay_ms
     return _clamp_open_interest_delay(out, cfg=cfg)
 
 
+def _materialize_open_interest_with_row_limit(
+    stream: Iterable[OpenInterest],
+    *,
+    row_limit: int | None,
+    context: str,
+) -> list[OpenInterest]:
+    if row_limit is None:
+        return list(stream)
+
+    limit = int(row_limit)
+    if limit <= 0:
+        return list(stream)
+
+    out: list[OpenInterest] = []
+    for ev in stream:
+        out.append(ev)
+        if len(out) > limit:
+            raise MemoryError(
+                f"{context}: materializing open_interest stream requires > {limit} rows. "
+                "Use a smaller window, increase open_interest_global_row_limit, or use fixed_delay/causal_asof."
+            )
+    return out
+
+
 def _stream_open_interest_delay_rolling(
-    evs: list[OpenInterest], *, q: float, cfg: CryptoHftDayConfig, fixed_delay_ms: int
+    stream: Iterable[OpenInterest], *, q: float, cfg: CryptoHftDayConfig, fixed_delay_ms: int
 ) -> Iterator[OpenInterest]:
     """Yield OI events with a rolling causal availability delay.
 
@@ -115,12 +142,12 @@ def _stream_open_interest_delay_rolling(
     """
 
     base_delay = _resolve_open_interest_base_delay(cfg=cfg, fixed_delay_ms=fixed_delay_ms)
-    lags_seen: list[int] = []
+    lags_sorted: list[int] = []
     last_out_ms: int | None = None
 
-    for ev in evs:
-        if lags_seen:
-            q_delay = _quantile_interpolated(lags_seen, q)
+    for ev in stream:
+        if lags_sorted:
+            q_delay = _quantile_interpolated(lags_sorted, q)
             delay = max(int(base_delay), int(q_delay))
             delay = _clamp_open_interest_delay(delay, cfg=cfg)
         else:
@@ -138,18 +165,22 @@ def _stream_open_interest_delay_rolling(
         lag = recv_ms - int(ev.timestamp_ms)
         if lag < 0:
             lag = 0
-        lags_seen.append(int(lag))
-        lags_seen.sort()
+        bisect.insort(lags_sorted, int(lag))
 
 
 def _stream_open_interest_delay_global_quantile(
-    evs: list[OpenInterest], *, q: float, cfg: CryptoHftDayConfig, fixed_delay_ms: int
+    stream: Iterable[OpenInterest], *, q: float, cfg: CryptoHftDayConfig, fixed_delay_ms: int
 ) -> Iterator[OpenInterest]:
     """Yield OI events using one global quantile from the full day.
 
     Warning: this is not strictly causal and may introduce leakage.
     """
 
+    evs = _materialize_open_interest_with_row_limit(
+        stream,
+        row_limit=cfg.open_interest_global_row_limit,
+        context="_stream_open_interest_delay_global_quantile",
+    )
     lags_ms: list[int] = []
     for ev in evs:
         recv_ms = int(int(ev.received_time_ns) // 1_000_000)
@@ -192,16 +223,14 @@ def _align_open_interest_stream(stream: Iterable[OpenInterest], *, cfg: CryptoHf
         if not (0.0 <= q <= 1.0):
             raise ValueError("open_interest_availability_quantile must be in [0, 1]")
 
-        evs = list(stream)
-        yield from _stream_open_interest_delay_rolling(evs, q=q, cfg=cfg, fixed_delay_ms=fixed_delay)
+        yield from _stream_open_interest_delay_rolling(stream, q=q, cfg=cfg, fixed_delay_ms=fixed_delay)
         return
 
     if mode == "causal_asof_global":
         q = float(cfg.open_interest_availability_quantile)
         if not (0.0 <= q <= 1.0):
             raise ValueError("open_interest_availability_quantile must be in [0, 1]")
-        evs = list(stream)
-        yield from _stream_open_interest_delay_global_quantile(evs, q=q, cfg=cfg, fixed_delay_ms=fixed_delay)
+        yield from _stream_open_interest_delay_global_quantile(stream, q=q, cfg=cfg, fixed_delay_ms=fixed_delay)
         return
 
     raise ValueError("open_interest_alignment_mode must be 'fixed_delay', 'causal_asof' or 'causal_asof_global'")
@@ -453,7 +482,15 @@ def build_day_stream(
         streams.append(_safe(tk))
 
     if cfg.include_open_interest:
-        oi = iter_open_interest_for_day(layout, exchange=cfg.exchange, symbol=symbol, day=day, filesystem=filesystem)
+        oi = iter_open_interest_for_day(
+            layout,
+            exchange=cfg.exchange,
+            symbol=symbol,
+            day=day,
+            filesystem=filesystem,
+            sort_mode=cfg.open_interest_sort_mode,
+            sort_row_limit=cfg.open_interest_sort_row_limit,
+        )
         oi = _align_open_interest_stream(oi, cfg=cfg)
         if start_ms is not None or end_ms is not None:
             oi = slice_event_stream(oi, start_ms=start_ms, end_ms=end_ms)

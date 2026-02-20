@@ -85,6 +85,7 @@ Data knobs (anti-lookahead):
 - `--open-interest-availability-quantile`
 - `--open-interest-min-delay-ms`
 - `--open-interest-max-delay-ms`
+- `--open-interest-global-row-limit` (limite de linhas materializadas no modo `causal_asof_global`; `<=0` desabilita)
 
 Data knobs (cross-stream alignment, optional):
 - `--stream-alignment-mode` (`none`, `fixed_delay`, `causal_asof`, `causal_asof_global`)

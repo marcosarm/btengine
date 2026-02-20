@@ -65,6 +65,34 @@ def test_iter_mark_price_keeps_already_sorted_order(tmp_path: Path) -> None:
     assert out[1].next_funding_time_ms == 2_000
 
 
+def test_iter_mark_price_sorts_equal_event_time_by_received_time(tmp_path: Path) -> None:
+    p = tmp_path / "mark_price_tie.parquet"
+    rows = [
+        (3_000_000_000_000_000_000, 2_000, "BTCUSDT", "102.0", "101.5", "0.03", 2_000),
+        (2_000_000_000_000_000_000, 1_000, "BTCUSDT", "101.0", "100.5", "0.01", 2_000),
+        (1_000_000_000_000_000_000, 1_000, "BTCUSDT", "99.0", "99.5", "0.02", 1_000),
+    ]
+    table = pa.table(
+        {
+            "received_time": pa.array([r[0] for r in rows], type=pa.int64()),
+            "event_time": pa.array([r[1] for r in rows], type=pa.int64()),
+            "symbol": pa.array([r[2] for r in rows], type=pa.string()),
+            "mark_price": pa.array([r[3] for r in rows], type=pa.string()),
+            "index_price": pa.array([r[4] for r in rows], type=pa.string()),
+            "funding_rate": pa.array([r[5] for r in rows], type=pa.string()),
+            "next_funding_time": pa.array([r[6] for r in rows], type=pa.int64()),
+        }
+    )
+    pq.write_table(table, p)
+
+    out = list(iter_mark_price(p))
+    assert [e.received_time_ns for e in out] == [
+        1_000_000_000_000_000_000,
+        2_000_000_000_000_000_000,
+        3_000_000_000_000_000_000,
+    ]
+
+
 def test_iter_mark_price_detects_disorder_in_later_row_group(tmp_path: Path) -> None:
     p = tmp_path / "mark_price_rg.parquet"
 

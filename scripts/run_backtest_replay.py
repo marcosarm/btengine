@@ -138,6 +138,12 @@ def main() -> int:
     )
     ap.add_argument("--open-interest-min-delay-ms", type=int, default=0, help="Lower bound for effective OI delay (ms).")
     ap.add_argument("--open-interest-max-delay-ms", type=int, default=None, help="Upper bound for effective OI delay (ms).")
+    ap.add_argument(
+        "--open-interest-global-row-limit",
+        type=int,
+        default=2_000_000,
+        help="Max rows materialized for open_interest alignment mode=causal_asof_global (<=0 disables).",
+    )
     ap.add_argument("--skip-missing", action="store_true", help="Skip missing daily files (trades/mark/ticker/oi/liquidations).")
     ap.add_argument("--start-utc", default=None, help="Optional ISO timestamp (UTC) to slice streams (e.g. 2025-07-01T12:00:00Z)")
     ap.add_argument("--end-utc", default=None, help="Optional ISO timestamp (UTC) to slice streams (exclusive end)")
@@ -214,6 +220,11 @@ def main() -> int:
             open_interest_min_delay_ms=int(args.open_interest_min_delay_ms or 0),
             open_interest_max_delay_ms=(
                 None if args.open_interest_max_delay_ms is None else int(args.open_interest_max_delay_ms)
+            ),
+            open_interest_global_row_limit=(
+                None
+                if int(args.open_interest_global_row_limit or 0) <= 0
+                else int(args.open_interest_global_row_limit)
             ),
             **stream_alignment_kwargs_from_args(args),
             orderbook_hours=hours,

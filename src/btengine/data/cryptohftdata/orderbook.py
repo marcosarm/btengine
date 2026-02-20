@@ -44,6 +44,10 @@ def _orderbook_needs_sort_auto(pf: pq.ParquetFile) -> bool:
     """
 
     prev_last_final: int | None = None
+    # Track closed contiguous-id segments to detect exact "re-entry" patterns:
+    # e.g. 10,10,11,11,10,10 (same final_update_id appears again later).
+    closed_segment_ids: set[int] = set()
+    current_segment_id: int | None = None
 
     for rg in range(pf.num_row_groups):
         sample = pf.read_row_group(rg, columns=["final_update_id"])
@@ -54,12 +58,23 @@ def _orderbook_needs_sort_auto(pf: pq.ParquetFile) -> bool:
         if prev_last_final is not None and int(arr[0]) < int(prev_last_final):
             return True
 
-        if len(arr) > 1:
-            segments = 1 + int(np.sum(arr[1:] != arr[:-1]))
-            unique = int(len(np.unique(arr)))
-            monotonic = bool(np.all(arr[1:] >= arr[:-1]))
-            if (not monotonic) or (unique > 0 and segments > unique * 1.2):
+        if len(arr) > 1 and not bool(np.all(arr[1:] >= arr[:-1])):
+            return True
+
+        # Process only segment boundaries (not every row) to keep this cheap.
+        segment_starts = np.flatnonzero(arr[1:] != arr[:-1]) + 1
+        if len(segment_starts):
+            segment_vals = np.concatenate((arr[:1], arr[segment_starts]))
+        else:
+            segment_vals = arr[:1]
+
+        for v in segment_vals:
+            fid = int(v)
+            if current_segment_id is not None and fid != int(current_segment_id):
+                closed_segment_ids.add(int(current_segment_id))
+            if fid in closed_segment_ids:
                 return True
+            current_segment_id = fid
 
         prev_last_final = int(arr[-1])
 
@@ -159,7 +174,17 @@ def _iter_depth_updates_sorted(pf: pq.ParquetFile, *, cols: list[str]) -> Iterat
     )
 
     # Sort to restore depth update sequence.
-    sort_idx = pc.sort_indices(table["final_update_id"])
+    # Include original file row index as secondary key so that updates within the
+    # same final_update_id keep their original order deterministically.
+    row_idx = pa.array(np.arange(table.num_rows, dtype=np.int64))
+    table = table.append_column("__row_idx", row_idx)
+    sort_idx = pc.sort_indices(
+        table,
+        sort_keys=[
+            ("final_update_id", "ascending"),
+            ("__row_idx", "ascending"),
+        ],
+    )
     table = table.take(sort_idx)
 
     received = table["received_time"].to_numpy(zero_copy_only=False)

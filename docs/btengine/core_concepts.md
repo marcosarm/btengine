@@ -33,10 +33,10 @@ No `EngineContext`, os ultimos valores por simbolo sao mantidos em:
 Em empate de `event_time_ms`, o desempate usa:
 
 - `received_time_ns` (quando disponivel)
-- metadados deterministicos do evento (prioridade por tipo + ids conhecidos)
+- ids deterministicos do evento (quando disponiveis)
 - ordem do stream (fallback final)
 
-Isso reduz vies de causalidade em empates sem perder determinismo.
+Nao ha prioridade fixa por tipo de evento no desempate.
 
 No adapter CryptoHFTData:
 

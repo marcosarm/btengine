@@ -85,7 +85,14 @@ def iter_liquidations_advanced(
         for c in float_cols:
             table = table.set_column(table.schema.get_field_index(c), c, pc.cast(table[c], pa.float64()))
 
-        sort_idx = pc.sort_indices(table["event_time"])
+        sort_idx = pc.sort_indices(
+            table,
+            sort_keys=[
+                ("event_time", "ascending"),
+                ("trade_time", "ascending"),
+                ("received_time", "ascending"),
+            ],
+        )
         table = table.take(sort_idx)
 
         received = table["received_time"].to_numpy(zero_copy_only=False)
