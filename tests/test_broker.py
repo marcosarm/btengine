@@ -143,6 +143,65 @@ def test_broker_submit_latency_defers_market_fill():
     assert abs(pos.avg_price - 100.0) < 1e-12
 
 
+def test_broker_has_open_orders_includes_pending_submits():
+    book = L2Book()
+    book.apply_depth_update(bid_updates=[(99.0, 1.0)], ask_updates=[(100.0, 2.0)])
+
+    broker = SimBroker(maker_fee_frac=0.0, taker_fee_frac=0.0, submit_latency_ms=100)
+    broker.submit(
+        Order(id="lat1", symbol="BTCUSDT", side="buy", order_type="market", quantity=1.0),
+        book,
+        now_ms=0,
+    )
+
+    assert broker.has_pending_orders()
+    assert broker.has_pending_orders("BTCUSDT")
+    assert broker.has_open_orders()
+
+    broker.on_time(100)
+    assert not broker.has_pending_orders()
+    assert not broker.has_open_orders()
+
+
+def test_broker_cancel_symbol_orders_cancels_active_and_pending():
+    book = L2Book()
+    book.apply_depth_update(bid_updates=[(99.0, 1.0)], ask_updates=[(100.0, 2.0)])
+
+    broker = SimBroker(maker_fee_frac=0.0, taker_fee_frac=0.0, submit_latency_ms=100)
+    # Activate one maker order first.
+    broker.submit(
+        Order(
+            id="m1",
+            symbol="BTCUSDT",
+            side="buy",
+            order_type="limit",
+            quantity=1.0,
+            price=99.0,
+            post_only=True,
+        ),
+        book,
+        now_ms=0,
+    )
+    broker.on_time(100)
+    assert broker.has_open_orders()
+
+    # Queue one pending market order.
+    broker.submit(
+        Order(id="p1", symbol="BTCUSDT", side="buy", order_type="market", quantity=1.0),
+        book,
+        now_ms=150,
+    )
+    assert broker.has_pending_orders("BTCUSDT")
+
+    broker.cancel_symbol_orders("BTCUSDT")
+    assert not broker.has_open_orders()
+
+    # Pending market submit should not activate anymore.
+    broker.on_time(500)
+    assert len(broker.fills) == 0
+    assert broker.portfolio.positions.get("BTCUSDT") is None
+
+
 def test_broker_post_only_crossing_is_rejected():
     book = L2Book()
     book.apply_depth_update(bid_updates=[(99.0, 1.0)], ask_updates=[(100.0, 2.0)])

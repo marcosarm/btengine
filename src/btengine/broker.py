@@ -57,6 +57,7 @@ class SimBroker:
     _pending_submits: list[tuple[int, int, Order, L2Book]] = field(default_factory=list, init=False, repr=False)
     _pending_cancels: list[tuple[int, int, str]] = field(default_factory=list, init=False, repr=False)
     _pending_submit_cancel_seq_cutoff: dict[str, int] = field(default_factory=dict, init=False, repr=False)
+    _pending_submit_cancel_seq_cutoff_by_symbol: dict[str, int] = field(default_factory=dict, init=False, repr=False)
     _seq: int = field(default=0, init=False, repr=False)
     _maker_seq: int = field(default=0, init=False, repr=False)
 
@@ -74,7 +75,8 @@ class SimBroker:
         while self._pending_submits and self._pending_submits[0][0] <= now:
             _, submit_seq, order, book = heapq.heappop(self._pending_submits)
             cancel_cutoff = int(self._pending_submit_cancel_seq_cutoff.get(order.id, -1))
-            if int(submit_seq) <= cancel_cutoff:
+            cancel_cutoff_sym = int(self._pending_submit_cancel_seq_cutoff_by_symbol.get(str(order.symbol), -1))
+            if int(submit_seq) <= max(cancel_cutoff, cancel_cutoff_sym):
                 # Lazy-canceled before activation.
                 continue
             self._submit_now(order, book, now)
@@ -288,6 +290,54 @@ class SimBroker:
             int(self._seq),
         )
 
+    def cancel_symbol_orders(
+        self,
+        symbol: str,
+        *,
+        cancel_active_makers: bool = True,
+        cancel_pending_submits: bool = True,
+    ) -> None:
+        """Cancel broker state tied to one symbol.
+
+        - `cancel_active_makers`: remove active maker orders for the symbol.
+        - `cancel_pending_submits`: lazily cancel pending submits for the symbol
+          that were enqueued up to the current sequence watermark.
+        """
+
+        sym = str(symbol)
+
+        if cancel_active_makers:
+            for order_id, mo in list(self._maker_orders.items()):
+                if str(mo.symbol) == sym:
+                    self._cancel_now(order_id)
+
+        if cancel_pending_submits:
+            self._pending_submit_cancel_seq_cutoff_by_symbol[sym] = max(
+                int(self._pending_submit_cancel_seq_cutoff_by_symbol.get(sym, -1)),
+                int(self._seq),
+            )
+
+    def has_pending_orders(self, symbol: str | None = None) -> bool:
+        """Return whether there are pending submits not canceled yet."""
+
+        if symbol is None:
+            for _, submit_seq, order, _ in self._pending_submits:
+                cancel_cutoff = int(self._pending_submit_cancel_seq_cutoff.get(order.id, -1))
+                cancel_cutoff_sym = int(self._pending_submit_cancel_seq_cutoff_by_symbol.get(str(order.symbol), -1))
+                if int(submit_seq) > max(cancel_cutoff, cancel_cutoff_sym):
+                    return True
+            return False
+
+        sym = str(symbol)
+        for _, submit_seq, order, _ in self._pending_submits:
+            if str(order.symbol) != sym:
+                continue
+            cancel_cutoff = int(self._pending_submit_cancel_seq_cutoff.get(order.id, -1))
+            cancel_cutoff_sym = int(self._pending_submit_cancel_seq_cutoff_by_symbol.get(sym, -1))
+            if int(submit_seq) > max(cancel_cutoff, cancel_cutoff_sym):
+                return True
+        return False
+
     def _on_depth_level_qty(self, *, symbol: str, maker_side: str, price: float, new_qty: float) -> None:
         key = (str(symbol), str(maker_side), _price_key(float(price)))
         bucket = self._maker_level_index.get(key)
@@ -325,4 +375,4 @@ class SimBroker:
             self._maker_level_index.pop(key, None)
 
     def has_open_orders(self) -> bool:
-        return bool(self._maker_orders)
+        return bool(self._maker_orders) or self.has_pending_orders()

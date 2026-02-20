@@ -77,6 +77,17 @@ class BookGuardedBroker:
         return self.inner.has_open_orders()
 
     def on_time(self, now_ms: int) -> None:
+        if self.cfg.enabled:
+            now = int(now_ms)
+            for sym, blocked_until in self._blocked_until_ms.items():
+                if now < int(blocked_until) or int(self._warmup_remaining.get(sym, 0)) > 0:
+                    # Keep pre-trip pending submits from activating while guard
+                    # is still in blocked/cooldown state for this symbol.
+                    self.inner.cancel_symbol_orders(
+                        sym,
+                        cancel_active_makers=False,
+                        cancel_pending_submits=True,
+                    )
         return self.inner.on_time(now_ms)
 
     def cancel(self, order_id: str, *, now_ms: int | None = None) -> None:
@@ -112,15 +123,16 @@ class BookGuardedBroker:
         elif reason == "stale":
             reset = bool(self.cfg.reset_on_stale)
 
+        # Always cancel old pending submits for this symbol when a guard trip
+        # happens, so they cannot activate during cooldown/warmup.
+        self.inner.cancel_symbol_orders(
+            sym,
+            cancel_active_makers=reset,
+            cancel_pending_submits=True,
+        )
+
         if reset:
             _reset_book_in_place(book)
-            # Clear maker orders tied to this symbol.
-            try:
-                for oid, mo in list(self.inner._maker_orders.items()):  # type: ignore[attr-defined]
-                    if str(getattr(mo, "symbol", "")) == sym:
-                        self.inner._maker_orders.pop(oid, None)  # type: ignore[attr-defined]
-            except Exception:
-                pass
             self.stats.resets += 1
 
     def on_depth_update(self, update: DepthUpdate, book: L2Book) -> None:

@@ -344,6 +344,31 @@ def _depth(event_time_ms: int, ask_px: float) -> DepthUpdate:
     )
 
 
+def test_engine_strict_monotonic_event_time_raises_on_regression():
+    engine = BacktestEngine(
+        config=EngineConfig(tick_interval_ms=0, strict_event_time_monotonic=True),
+        broker=SimBroker(maker_fee_frac=0.0, taker_fee_frac=0.0),
+    )
+    events = [_depth(1_000, 101.0), _depth(900, 101.0)]
+
+    try:
+        engine.run(events, strategy=NoopStrategy())
+        assert False, "expected strict monotonicity check to raise"
+    except ValueError as e:
+        assert "event_time_ms must be non-decreasing" in str(e)
+
+
+def test_engine_default_monotonic_mode_allows_regression():
+    engine = BacktestEngine(
+        config=EngineConfig(tick_interval_ms=0, strict_event_time_monotonic=False),
+        broker=SimBroker(maker_fee_frac=0.0, taker_fee_frac=0.0),
+    )
+    events = [_depth(1_000, 101.0), _depth(900, 101.0)]
+
+    res = engine.run(events, strategy=NoopStrategy())
+    assert res.ctx.now_ms == 900
+
+
 def test_engine_default_broker_time_mode_after_event():
     broker = SimBroker(maker_fee_frac=0.0, taker_fee_frac=0.0, submit_latency_ms=100)
     engine = BacktestEngine(config=EngineConfig(tick_interval_ms=0), broker=broker)

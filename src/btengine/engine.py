@@ -33,6 +33,7 @@ class EngineConfig:
     tick_interval_ms: int = 1_000
     trading_start_ms: int | None = None
     trading_end_ms: int | None = None
+    strict_event_time_monotonic: bool = False
     trading_window_mode: Literal["entry_only", "block_all"] = "entry_only"
     allow_reducing_outside_trading_window: bool = True
     broker_time_mode: Literal["before_event", "after_event"] = "after_event"
@@ -202,8 +203,16 @@ class BacktestEngine:
                 ctx.broker.on_time(int(ts))
             on_tick(int(ts), ctx)
 
+        last_event_time_ms: int | None = None
+
         for ev in events:
             now = int(ev.event_time_ms)
+            if last_event_time_ms is not None and now < int(last_event_time_ms):
+                if bool(self.config.strict_event_time_monotonic):
+                    raise ValueError(
+                        f"event_time_ms must be non-decreasing, got {now} after {int(last_event_time_ms)}"
+                    )
+            last_event_time_ms = now
 
             # Drive ticks strictly before current event time.
             if tick_interval > 0 and callable(on_tick):

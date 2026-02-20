@@ -63,20 +63,31 @@ def inspect_parquet(
         # Do not assume parquet is stored in time/update order. Compute min/max
         # from columns to support interleaved storage.
         t = pf.read(columns=cols)
-        first_time = int(pc.min(t[time_col]).as_py())
-        last_time = int(pc.max(t[time_col]).as_py())
+        min_time = pc.min(t[time_col]).as_py()
+        max_time = pc.max(t[time_col]).as_py()
+        if min_time is not None:
+            first_time = int(min_time)
+        if max_time is not None:
+            last_time = int(max_time)
 
         if orderbook_ids:
-            min_final = int(pc.min(t["final_update_id"]).as_py())
-            max_final = int(pc.max(t["final_update_id"]).as_py())
-            first_final = min_final
-            last_final = max_final
+            min_final_raw = pc.min(t["final_update_id"]).as_py()
+            max_final_raw = pc.max(t["final_update_id"]).as_py()
+            min_final: int | None = None
+            if min_final_raw is not None:
+                min_final = int(min_final_raw)
+                first_final = min_final
+            if max_final_raw is not None:
+                last_final = int(max_final_raw)
 
             # prev_final_update_id is constant within a final_update_id group.
-            m = pc.equal(t["final_update_id"], pa.scalar(min_final, pa.int64()))
-            prev_vals = pc.filter(t["prev_final_update_id"], m)
-            if len(prev_vals) > 0:
-                first_prev_final = int(prev_vals[0].as_py())
+            if min_final is not None:
+                m = pc.equal(t["final_update_id"], pa.scalar(min_final, pa.int64()))
+                prev_vals = pc.filter(t["prev_final_update_id"], m)
+                if len(prev_vals) > 0:
+                    first_prev_final_raw = prev_vals[0].as_py()
+                    if first_prev_final_raw is not None:
+                        first_prev_final = int(first_prev_final_raw)
 
     return ParquetQuickInfo(
         uri=uri,
