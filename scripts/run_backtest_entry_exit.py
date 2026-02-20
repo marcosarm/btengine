@@ -14,7 +14,15 @@ from btengine.broker import SimBroker
 from btengine.data.cryptohftdata import CryptoHftDayConfig, CryptoHftLayout, S3Config, build_day_stream, make_s3_filesystem
 from btengine.engine import BacktestEngine, EngineConfig
 from btengine.strategies import EntryExitStrategy
-from btengine.util import add_strict_book_args, load_dotenv, strict_book_config_from_args
+from btengine.util import (
+    add_stream_alignment_args,
+    add_strict_book_args,
+    add_taker_slippage_args,
+    load_dotenv,
+    stream_alignment_kwargs_from_args,
+    strict_book_config_from_args,
+    taker_slippage_kwargs_from_args,
+)
 
 
 def _parse_day(s: str) -> date:
@@ -104,6 +112,8 @@ def main() -> int:
     ap.add_argument("--taker-fee-frac", type=float, default=0.0005)
     ap.add_argument("--submit-latency-ms", type=int, default=0)
     ap.add_argument("--cancel-latency-ms", type=int, default=0)
+    add_taker_slippage_args(ap)
+    add_stream_alignment_args(ap)
     add_strict_book_args(ap, default_max_staleness_ms=250)
 
     ap.add_argument("--out-fills-csv", default=None)
@@ -173,6 +183,7 @@ def main() -> int:
         open_interest_availability_quantile=float(args.open_interest_availability_quantile),
         open_interest_min_delay_ms=int(args.open_interest_min_delay_ms or 0),
         open_interest_max_delay_ms=(None if args.open_interest_max_delay_ms is None else int(args.open_interest_max_delay_ms)),
+        **stream_alignment_kwargs_from_args(args),
         orderbook_hours=hours,
         orderbook_skip_missing=True,
         skip_missing_daily_files=bool(args.skip_missing),
@@ -197,6 +208,7 @@ def main() -> int:
         taker_fee_frac=float(args.taker_fee_frac),
         submit_latency_ms=int(args.submit_latency_ms),
         cancel_latency_ms=int(args.cancel_latency_ms),
+        **taker_slippage_kwargs_from_args(args),
     )
     guard_cfg = strict_book_config_from_args(args)
     engine = BacktestEngine(

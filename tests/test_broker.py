@@ -24,6 +24,72 @@ def test_broker_taker_market_fill_updates_portfolio():
     assert abs(book.asks[100.0] - 0.5) < 1e-12
 
 
+def test_broker_taker_slippage_overlay_applies_conservative_buy_price():
+    book = L2Book()
+    book.apply_depth_update(bid_updates=[(99.0, 2.0)], ask_updates=[(100.0, 2.0)])
+
+    broker = SimBroker(
+        maker_fee_frac=0.0,
+        taker_fee_frac=0.0,
+        taker_slippage_bps=10.0,  # 0.10% of execution price
+        taker_slippage_spread_frac=0.5,  # 50% of spread
+        taker_slippage_abs=0.25,  # absolute overlay in quote units
+    )
+    broker.submit(
+        Order(id="o_slip_buy", symbol="BTCUSDT", side="buy", order_type="market", quantity=1.0),
+        book,
+        now_ms=0,
+    )
+
+    fill = broker.fills[0]
+    # raw=100.0, spread=1.0 -> overlay = 0.25 + 0.10 + 0.50 = 0.85
+    assert abs(fill.price - 100.85) < 1e-12
+    pos = broker.portfolio.positions["BTCUSDT"]
+    assert abs(pos.avg_price - 100.85) < 1e-12
+
+
+def test_broker_taker_slippage_overlay_applies_conservative_sell_price():
+    book = L2Book()
+    book.apply_depth_update(bid_updates=[(100.0, 2.0)], ask_updates=[(101.0, 2.0)])
+
+    broker = SimBroker(
+        maker_fee_frac=0.0,
+        taker_fee_frac=0.0,
+        taker_slippage_bps=10.0,
+        taker_slippage_spread_frac=0.5,
+        taker_slippage_abs=0.25,
+    )
+    broker.submit(
+        Order(id="o_slip_sell", symbol="BTCUSDT", side="sell", order_type="market", quantity=1.0),
+        book,
+        now_ms=0,
+    )
+
+    fill = broker.fills[0]
+    # raw=100.0, spread=1.0 -> overlay = 0.85; sell receives worse price.
+    assert abs(fill.price - 99.15) < 1e-12
+    pos = broker.portfolio.positions["BTCUSDT"]
+    assert abs(pos.avg_price - 99.15) < 1e-12
+
+
+def test_broker_rejects_negative_taker_slippage_knobs():
+    try:
+        SimBroker(taker_slippage_bps=-1.0)
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+    try:
+        SimBroker(taker_slippage_spread_frac=-1.0)
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+    try:
+        SimBroker(taker_slippage_abs=-1.0)
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+
+
 def test_broker_maker_order_fills_on_trade():
     book = L2Book()
     book.apply_depth_update(bid_updates=[(100.0, 1.0)], ask_updates=[(101.0, 1.0)])
@@ -123,6 +189,38 @@ def test_broker_taker_ioc_respects_limit_price():
     # Self-impact: the 100.0 ask level was fully consumed.
     assert 100.0 not in book.asks
     assert abs(book.asks[101.0] - 10.0) < 1e-12
+
+
+def test_broker_taker_ioc_with_slippage_still_respects_limit_price():
+    book = L2Book()
+    book.apply_depth_update(bid_updates=[(99.0, 1.0)], ask_updates=[(100.0, 1.0), (101.0, 10.0)])
+
+    broker = SimBroker(
+        maker_fee_frac=0.0,
+        taker_fee_frac=0.0,
+        taker_slippage_bps=100.0,
+        taker_slippage_spread_frac=1.0,
+        taker_slippage_abs=1.0,
+    )
+    broker.submit(
+        Order(
+            id="ioc_slip",
+            symbol="BTCUSDT",
+            side="buy",
+            order_type="limit",
+            quantity=5.0,
+            price=100.0,
+            time_in_force="IOC",
+        ),
+        book,
+        now_ms=0,
+    )
+    fill = broker.fills[0]
+    # Even with conservative slippage, limit price is a hard cap.
+    assert abs(fill.price - 100.0) < 1e-12
+    pos = broker.portfolio.positions["BTCUSDT"]
+    assert abs(pos.qty - 1.0) < 1e-12
+    assert abs(pos.avg_price - 100.0) < 1e-12
 
 
 def test_broker_submit_latency_defers_market_fill():

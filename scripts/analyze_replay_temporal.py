@@ -14,7 +14,7 @@ from btengine.data.cryptohftdata import CryptoHftDayConfig, CryptoHftLayout, S3C
 from btengine.marketdata import L2Book
 from btengine.replay import merge_event_streams
 from btengine.types import DepthUpdate, Liquidation, MarkPrice, OpenInterest, Ticker, Trade
-from btengine.util import load_dotenv
+from btengine.util import add_stream_alignment_args, load_dotenv, stream_alignment_kwargs_from_args
 
 
 def _parse_day(s: str) -> date:
@@ -165,6 +165,7 @@ class CrossStreamChecks:
     trade_total: int = 0
     trade_eligible: int = 0
     trade_outside_spread: int = 0
+    trade_outside_band: int = 0
     trade_skipped_no_book: int = 0
     trade_skipped_stale: int = 0
     trade_skipped_crossed: int = 0
@@ -281,6 +282,19 @@ def main() -> int:
         default=30.0,
         help="For mark/ticker validation, require value within +/- N bps around mid-price.",
     )
+    ap.add_argument(
+        "--trade-vs-book-band-bps",
+        type=float,
+        default=5.0,
+        help="Trade-vs-book tolerance around bid/ask in bps (outside this expanded band counts as outside_band).",
+    )
+    ap.add_argument(
+        "--trade-vs-book-band-abs",
+        type=float,
+        default=0.0,
+        help="Absolute trade-vs-book tolerance in quote units; effective band=max(abs, bps*mid).",
+    )
+    add_stream_alignment_args(ap)
     args = ap.parse_args()
 
     env = load_dotenv(args.dotenv, override=False).values
@@ -339,6 +353,7 @@ def main() -> int:
             open_interest_max_delay_ms=(
                 None if args.open_interest_max_delay_ms is None else int(args.open_interest_max_delay_ms)
             ),
+            **stream_alignment_kwargs_from_args(args),
             orderbook_hours=hours,
             orderbook_skip_missing=True,
             skip_missing_daily_files=args.skip_missing,
@@ -353,6 +368,8 @@ def main() -> int:
     by_type: dict[str, TemporalStats] = {k: TemporalStats() for k in ["depth", "trade", "mark", "ticker", "oi", "liq"]}
     depth_checks = DepthChecks()
     trade_time_mismatch = 0
+    trade_time_shifted = 0
+    stream_alignment_mode = str(getattr(args, "stream_alignment_mode", "none"))
 
     oi_publish_delay_ms = RunningFloatStats()
     oi_ingest_latency_ms = RunningFloatStats()
@@ -367,6 +384,14 @@ def main() -> int:
     mid_band_bps = float(args.cross_check_mid_band_bps)
     if mid_band_bps < 0.0:
         print("ERROR: --cross-check-mid-band-bps must be >= 0", file=sys.stderr)
+        return 2
+    trade_band_bps = float(args.trade_vs_book_band_bps)
+    if trade_band_bps < 0.0:
+        print("ERROR: --trade-vs-book-band-bps must be >= 0", file=sys.stderr)
+        return 2
+    trade_band_abs = float(args.trade_vs_book_band_abs)
+    if trade_band_abs < 0.0:
+        print("ERROR: --trade-vs-book-band-abs must be >= 0", file=sys.stderr)
         return 2
 
     def _stype(ev) -> str:
@@ -416,7 +441,10 @@ def main() -> int:
 
         if isinstance(ev, Trade):
             if int(ev.trade_time_ms) != int(ev.event_time_ms):
-                trade_time_mismatch += 1
+                if stream_alignment_mode == "none":
+                    trade_time_mismatch += 1
+                else:
+                    trade_time_shifted += 1
             cross.trade_total += 1
             bid, ask, status = _book_state_for_check(
                 books,
@@ -437,6 +465,10 @@ def main() -> int:
                 px = float(ev.price)
                 if px < float(bid) or px > float(ask):
                     cross.trade_outside_spread += 1
+                mid = (float(bid) + float(ask)) / 2.0
+                band = max(float(trade_band_abs), float(mid) * float(trade_band_bps) / 10_000.0)
+                if px < float(bid) - band or px > float(ask) + band:
+                    cross.trade_outside_band += 1
 
         if isinstance(ev, MarkPrice):
             cross.mark_total += 1
@@ -539,6 +571,8 @@ def main() -> int:
 
     if trade_time_mismatch:
         print(f"\ntrade_time mismatches: {trade_time_mismatch}")
+    if trade_time_shifted:
+        print(f"\ntrade_time shifted_by_alignment: {trade_time_shifted}")
 
     if oi_publish_delay_ms.n:
         print("\n== Open Interest Timing ==")
@@ -551,11 +585,13 @@ def main() -> int:
 
     print("\n== Cross-Stream Consistency ==")
     print(f"book_fresh_ms: {fresh_book_ms}  mid_band_bps: {mid_band_bps}")
+    print(f"trade_band_bps: {trade_band_bps}  trade_band_abs: {trade_band_abs}")
 
     print(
         "trade_vs_book: "
         f"total={cross.trade_total} eligible={cross.trade_eligible} "
         f"outside_spread={cross.trade_outside_spread} ({_pct(cross.trade_outside_spread, cross.trade_eligible):.4f}%) "
+        f"outside_band={cross.trade_outside_band} ({_pct(cross.trade_outside_band, cross.trade_eligible):.4f}%) "
         f"skipped(no_book/stale/crossed)={cross.trade_skipped_no_book}/{cross.trade_skipped_stale}/{cross.trade_skipped_crossed}"
     )
     print(

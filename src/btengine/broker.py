@@ -42,6 +42,11 @@ class SimBroker:
     # Realism knobs.
     submit_latency_ms: int = 0
     cancel_latency_ms: int = 0
+    # Conservative taker slippage overlay:
+    # executed_px +=/- (abs + bps*px + spread_frac*spread)
+    taker_slippage_bps: float = 0.0
+    taker_slippage_spread_frac: float = 0.0
+    taker_slippage_abs: float = 0.0
 
     # Conservative maker queue modeling.
     maker_queue_ahead_factor: float = 1.0
@@ -60,6 +65,14 @@ class SimBroker:
     _pending_submit_cancel_seq_cutoff_by_symbol: dict[str, int] = field(default_factory=dict, init=False, repr=False)
     _seq: int = field(default=0, init=False, repr=False)
     _maker_seq: int = field(default=0, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if float(self.taker_slippage_bps) < 0.0:
+            raise ValueError("taker_slippage_bps must be >= 0")
+        if float(self.taker_slippage_spread_frac) < 0.0:
+            raise ValueError("taker_slippage_spread_frac must be >= 0")
+        if float(self.taker_slippage_abs) < 0.0:
+            raise ValueError("taker_slippage_abs must be >= 0")
 
     def on_time(self, now_ms: int) -> None:
         """Advance broker time and process any pending submissions/cancels."""
@@ -182,6 +195,8 @@ class SimBroker:
         self._maker_seq += 1
 
     def _fill_taker(self, order: Order, book: L2Book, now_ms: int, *, limit_price: float | None) -> tuple[float, float]:
+        pre_best_bid = book.best_bid()
+        pre_best_ask = book.best_ask()
         avg_px, filled_qty = consume_taker_fill(
             book,
             side=order.side,
@@ -191,21 +206,69 @@ class SimBroker:
         if filled_qty <= 0.0 or math.isnan(avg_px):
             return avg_px, 0.0
 
-        fee = filled_qty * avg_px * self.taker_fee_frac
-        self.portfolio.apply_fill(order.symbol, order.side, filled_qty, avg_px, fee_usdt=fee)
+        exec_px = self._apply_taker_slippage(
+            side=str(order.side),
+            raw_exec_price=float(avg_px),
+            best_bid=pre_best_bid,
+            best_ask=pre_best_ask,
+            limit_price=limit_price,
+        )
+        fee = filled_qty * exec_px * self.taker_fee_frac
+        self.portfolio.apply_fill(order.symbol, order.side, filled_qty, exec_px, fee_usdt=fee)
         self.fills.append(
             Fill(
                 order_id=order.id,
                 symbol=order.symbol,
                 side=order.side,
                 quantity=filled_qty,
-                price=avg_px,
+                price=exec_px,
                 fee_usdt=fee,
                 event_time_ms=now_ms,
                 liquidity="taker",
             )
         )
-        return avg_px, filled_qty
+        return exec_px, filled_qty
+
+    def _apply_taker_slippage(
+        self,
+        *,
+        side: str,
+        raw_exec_price: float,
+        best_bid: float | None,
+        best_ask: float | None,
+        limit_price: float | None,
+    ) -> float:
+        if raw_exec_price <= 0.0:
+            return float(raw_exec_price)
+
+        spread = 0.0
+        if best_bid is not None and best_ask is not None and float(best_ask) >= float(best_bid):
+            spread = float(best_ask) - float(best_bid)
+
+        price_slippage = (
+            float(self.taker_slippage_abs)
+            + float(raw_exec_price) * float(self.taker_slippage_bps) / 10_000.0
+            + float(spread) * float(self.taker_slippage_spread_frac)
+        )
+        if price_slippage <= 0.0:
+            out = float(raw_exec_price)
+        elif str(side) == "buy":
+            out = float(raw_exec_price) + float(price_slippage)
+        elif str(side) == "sell":
+            out = max(0.0, float(raw_exec_price) - float(price_slippage))
+        else:
+            out = float(raw_exec_price)
+
+        # Preserve limit-order semantics even with conservative overlays:
+        # a buy cannot execute above limit and a sell cannot execute below limit.
+        if limit_price is not None:
+            lp = float(limit_price)
+            if str(side) == "buy":
+                out = min(float(out), lp)
+            elif str(side) == "sell":
+                out = max(float(out), lp)
+
+        return float(out)
 
     def on_depth_update(self, update: DepthUpdate, book: L2Book) -> None:
         # Update book first.

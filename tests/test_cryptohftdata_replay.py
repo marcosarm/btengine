@@ -3,7 +3,7 @@ from datetime import date
 import pytest
 
 from btengine.data.cryptohftdata import replay as replay_mod
-from btengine.types import OpenInterest
+from btengine.types import OpenInterest, Trade
 
 
 class _DummyLayout:
@@ -18,6 +18,19 @@ def _oi(ts_ms: int, recv_ms: int) -> OpenInterest:
         symbol="BTCUSDT",
         sum_open_interest=1.0,
         sum_open_interest_value=1.0,
+    )
+
+
+def _trade(ts_ms: int, recv_ms: int, *, trade_id: int) -> Trade:
+    return Trade(
+        received_time_ns=int(recv_ms) * 1_000_000,
+        event_time_ms=int(ts_ms),
+        trade_time_ms=int(ts_ms),
+        symbol="BTCUSDT",
+        trade_id=int(trade_id),
+        price=100.0,
+        quantity=1.0,
+        is_buyer_maker=True,
     )
 
 
@@ -193,4 +206,208 @@ def test_build_day_stream_open_interest_rejects_negative_precalibrated_delay(mon
         open_interest_calibrated_delay_ms=-1,
     )
     with pytest.raises(ValueError):
+        list(replay_mod.build_day_stream(_DummyLayout(), cfg=cfg, symbol="BTCUSDT", day=date(2025, 7, 20), filesystem=None))
+
+
+def test_build_day_stream_trade_alignment_fixed_delay(monkeypatch):
+    monkeypatch.setattr(
+        replay_mod,
+        "iter_trades_for_day",
+        lambda *args, **kwargs: iter([_trade(1_000, 1_100, trade_id=1), _trade(2_000, 2_100, trade_id=2)]),
+    )
+
+    cfg = replay_mod.CryptoHftDayConfig(
+        include_trades=True,
+        include_orderbook=False,
+        include_mark_price=False,
+        include_ticker=False,
+        include_open_interest=False,
+        include_liquidations=False,
+        stream_alignment_mode="fixed_delay",
+        trade_delay_ms=250,
+    )
+    out = list(
+        replay_mod.build_day_stream(
+            _DummyLayout(),
+            cfg=cfg,
+            symbol="BTCUSDT",
+            day=date(2025, 7, 20),
+            filesystem=None,
+        )
+    )
+    assert [e.event_time_ms for e in out] == [1_250, 2_250]
+
+
+def test_build_day_stream_trade_alignment_causal_asof_rolling(monkeypatch):
+    monkeypatch.setattr(
+        replay_mod,
+        "iter_trades_for_day",
+        lambda *args, **kwargs: iter(
+            [
+                _trade(1_000, 1_100, trade_id=1),  # lag=100
+                _trade(2_000, 2_500, trade_id=2),  # lag=500
+                _trade(3_000, 4_500, trade_id=3),  # lag=1500
+            ]
+        ),
+    )
+
+    cfg = replay_mod.CryptoHftDayConfig(
+        include_trades=True,
+        include_orderbook=False,
+        include_mark_price=False,
+        include_ticker=False,
+        include_open_interest=False,
+        include_liquidations=False,
+        stream_alignment_mode="causal_asof",
+        stream_alignment_quantile=0.5,
+        stream_alignment_history_size=1024,
+    )
+    out = list(
+        replay_mod.build_day_stream(
+            _DummyLayout(),
+            cfg=cfg,
+            symbol="BTCUSDT",
+            day=date(2025, 7, 20),
+            filesystem=None,
+        )
+    )
+    # causal, past-only:
+    # ev1 -> no history => +0
+    # ev2 -> q([100])=100
+    # ev3 -> q([100,500])=300
+    assert [e.event_time_ms for e in out] == [1_000, 2_100, 3_300]
+
+
+def test_build_day_stream_trade_alignment_respects_min_max_delay(monkeypatch):
+    monkeypatch.setattr(
+        replay_mod,
+        "iter_trades_for_day",
+        lambda *args, **kwargs: iter([_trade(1_000, 1_010, trade_id=1), _trade(2_000, 2_100, trade_id=2)]),
+    )
+
+    cfg = replay_mod.CryptoHftDayConfig(
+        include_trades=True,
+        include_orderbook=False,
+        include_mark_price=False,
+        include_ticker=False,
+        include_open_interest=False,
+        include_liquidations=False,
+        stream_alignment_mode="fixed_delay",
+        trade_delay_ms=10,
+        stream_alignment_min_delay_ms=50,
+        stream_alignment_max_delay_ms=80,
+    )
+    out = list(
+        replay_mod.build_day_stream(
+            _DummyLayout(),
+            cfg=cfg,
+            symbol="BTCUSDT",
+            day=date(2025, 7, 20),
+            filesystem=None,
+        )
+    )
+    # fixed 10ms clamped to min=50ms
+    assert [e.event_time_ms for e in out] == [1_050, 2_050]
+
+
+def test_build_day_stream_trade_alignment_rejects_invalid_quantile(monkeypatch):
+    monkeypatch.setattr(
+        replay_mod,
+        "iter_trades_for_day",
+        lambda *args, **kwargs: iter([_trade(1_000, 1_100, trade_id=1)]),
+    )
+
+    cfg = replay_mod.CryptoHftDayConfig(
+        include_trades=True,
+        include_orderbook=False,
+        include_mark_price=False,
+        include_ticker=False,
+        include_open_interest=False,
+        include_liquidations=False,
+        stream_alignment_mode="causal_asof",
+        stream_alignment_quantile=2.0,
+    )
+    with pytest.raises(ValueError):
+        list(replay_mod.build_day_stream(_DummyLayout(), cfg=cfg, symbol="BTCUSDT", day=date(2025, 7, 20), filesystem=None))
+
+
+def test_build_day_stream_trade_alignment_rejects_invalid_history_size(monkeypatch):
+    monkeypatch.setattr(
+        replay_mod,
+        "iter_trades_for_day",
+        lambda *args, **kwargs: iter([_trade(1_000, 1_100, trade_id=1)]),
+    )
+
+    cfg = replay_mod.CryptoHftDayConfig(
+        include_trades=True,
+        include_orderbook=False,
+        include_mark_price=False,
+        include_ticker=False,
+        include_open_interest=False,
+        include_liquidations=False,
+        stream_alignment_mode="causal_asof",
+        stream_alignment_quantile=0.5,
+        stream_alignment_history_size=0,
+    )
+    with pytest.raises(ValueError):
+        list(replay_mod.build_day_stream(_DummyLayout(), cfg=cfg, symbol="BTCUSDT", day=date(2025, 7, 20), filesystem=None))
+
+
+def test_build_day_stream_trade_alignment_causal_asof_clamps_non_monotonic(monkeypatch):
+    monkeypatch.setattr(
+        replay_mod,
+        "iter_trades_for_day",
+        lambda *args, **kwargs: iter(
+            [
+                _trade(1_000, 3_000, trade_id=1),  # lag=2000
+                _trade(2_000, 2_000, trade_id=2),  # lag=0
+                _trade(3_000, 3_000, trade_id=3),  # lag=0
+            ]
+        ),
+    )
+
+    cfg = replay_mod.CryptoHftDayConfig(
+        include_trades=True,
+        include_orderbook=False,
+        include_mark_price=False,
+        include_ticker=False,
+        include_open_interest=False,
+        include_liquidations=False,
+        stream_alignment_mode="causal_asof",
+        stream_alignment_quantile=0.0,
+        stream_alignment_history_size=1024,
+    )
+    out = list(
+        replay_mod.build_day_stream(
+            _DummyLayout(),
+            cfg=cfg,
+            symbol="BTCUSDT",
+            day=date(2025, 7, 20),
+            filesystem=None,
+        )
+    )
+    times = [e.event_time_ms for e in out]
+    assert times == [1_000, 4_000, 4_000]
+    assert times == sorted(times)
+
+
+def test_build_day_stream_trade_alignment_global_row_limit_raises(monkeypatch):
+    monkeypatch.setattr(
+        replay_mod,
+        "iter_trades_for_day",
+        lambda *args, **kwargs: iter([_trade(1_000, 1_100, trade_id=1), _trade(2_000, 2_100, trade_id=2)]),
+    )
+
+    cfg = replay_mod.CryptoHftDayConfig(
+        include_trades=True,
+        include_orderbook=False,
+        include_mark_price=False,
+        include_ticker=False,
+        include_open_interest=False,
+        include_liquidations=False,
+        stream_alignment_mode="causal_asof_global",
+        stream_alignment_quantile=0.5,
+        stream_alignment_global_row_limit=1,
+    )
+    with pytest.raises(MemoryError):
         list(replay_mod.build_day_stream(_DummyLayout(), cfg=cfg, symbol="BTCUSDT", day=date(2025, 7, 20), filesystem=None))

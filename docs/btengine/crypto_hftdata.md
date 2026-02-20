@@ -146,6 +146,52 @@ O adapter `iter_open_interest_for_day(...)`:
 
 Para evitar lookahead, voce pode atrasar a disponibilidade do snapshot via `CryptoHftDayConfig.open_interest_delay_ms` (ver `docs/btengine/scripts.md`).
 
+## Alinhamento temporal opcional (trade/mark/ticker/liquidation)
+
+Para reduzir mismatch de clocks entre streams assincronos, o replay agora suporta
+alinhar `event_time_ms` de `trades`, `mark_price`, `ticker` e `liquidations`:
+
+- `stream_alignment_mode`: `none` (default), `fixed_delay`, `causal_asof`, `causal_asof_global`
+- delays base por stream:
+  - `trade_delay_ms`
+  - `mark_price_delay_ms`
+  - `ticker_delay_ms`
+  - `liquidation_delay_ms`
+- limites:
+  - `stream_alignment_min_delay_ms`
+  - `stream_alignment_max_delay_ms`
+- em `causal_asof`:
+  - `stream_alignment_quantile`
+  - `stream_alignment_history_size` (janela rolling, causal, sem olhar futuro)
+- em `causal_asof_global`:
+  - `stream_alignment_global_row_limit` limita materializacao in-memory
+  - se exceder, o replay levanta `MemoryError` com orientacao de janela menor/modo alternativo
+
+Garantia adicional:
+
+- apos o shift temporal, o adapter faz clamp monotono por stream para evitar `event_time_ms` regredir.
+
+Uso recomendado:
+
+- manter `none` para baseline bruto;
+- usar `fixed_delay` em producao quando voce ja tem atraso calibrado offline;
+- usar `causal_asof` para ajuste adaptativo sem leakage.
+
+## Preprocess (sort + dedup) antes do replay
+
+Script novo para pre-ordenar parquet e remover duplicatas por chave de evento:
+
+```bash
+python scripts\\preprocess_parquet_timeseries.py --kind trades --input trades.parquet --output trades.sorted.parquet
+python scripts\\preprocess_parquet_timeseries.py --kind orderbook --input orderbook_12.parquet --output orderbook_12.sorted.parquet
+```
+
+Isso ajuda a reduzir regressao temporal e ruido de duplicatas antes de rodar o motor.
+
+Knob de memoria:
+
+- `--max-rows-in-memory` (default `2_000_000`; `<=0` desabilita fail-fast)
+
 ## Validacao do dataset
 
 O repo inclui `scripts/validate_s3_dataset.py` para checar existencia, schema, contagem de linhas e range de timestamps.

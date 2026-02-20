@@ -5,6 +5,7 @@ from .mark_price import iter_mark_price, iter_mark_price_for_day
 from .open_interest import iter_open_interest, iter_open_interest_for_day
 from .orderbook import iter_depth_updates, iter_depth_updates_for_day
 from .paths import CryptoHftLayout
+from .preprocess import PreprocessResult, preprocess_parquet_file
 from .replay import CryptoHftDayConfig, build_day_stream
 from .s3 import S3Config, make_s3_filesystem
 from .ticker import iter_ticker, iter_ticker_for_day
@@ -27,5 +28,7 @@ __all__ = [
     "iter_trades",
     "iter_trades_for_day",
     "build_day_stream",
+    "preprocess_parquet_file",
+    "PreprocessResult",
     "make_s3_filesystem",
 ]

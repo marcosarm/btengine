@@ -74,6 +74,9 @@ Execution knobs (for strategies that submit orders):
 - `--maker-queue-ahead-factor`
 - `--maker-queue-ahead-extra-qty`
 - `--maker-trade-participation`
+- `--taker-slippage-bps`
+- `--taker-slippage-spread-frac`
+- `--taker-slippage-abs`
 
 Data knobs (anti-lookahead):
 - `--open-interest-delay-ms`
@@ -82,6 +85,14 @@ Data knobs (anti-lookahead):
 - `--open-interest-availability-quantile`
 - `--open-interest-min-delay-ms`
 - `--open-interest-max-delay-ms`
+
+Data knobs (cross-stream alignment, optional):
+- `--stream-alignment-mode` (`none`, `fixed_delay`, `causal_asof`, `causal_asof_global`)
+- `--stream-alignment-quantile`
+- `--stream-alignment-min-delay-ms`, `--stream-alignment-max-delay-ms`
+- `--stream-alignment-history-size`
+- `--stream-alignment-global-row-limit` (limite de linhas materializadas no modo `causal_asof_global`; `<=0` desabilita)
+- `--trade-delay-ms`, `--mark-price-delay-ms`, `--ticker-delay-ms`, `--liquidation-delay-ms`
 
 Recommended OI preset for realism:
 
@@ -200,11 +211,39 @@ Recommended temporal check with the same OI preset:
 python scripts\\analyze_replay_temporal.py --day 2025-07-01 --symbols BTCUSDT --mark-price-symbols BTCUSDT --hours 12-12 --include-ticker --include-open-interest --include-liquidations --open-interest-alignment causal_asof --open-interest-availability-quantile 0.5 --open-interest-min-delay-ms 5000 --open-interest-max-delay-ms 300000 --cross-check-fresh-book-ms 250 --cross-check-mid-band-bps 30 --book-check-every 5000 --max-events 0
 ```
 
+Trade-vs-book com tolerancia (menos falso positivo em streams assincronos):
+
+```bash
+python scripts\\analyze_replay_temporal.py --day 2025-07-01 --symbols BTCUSDT --hours 12-12 --cross-check-fresh-book-ms 250 --trade-vs-book-band-bps 5 --trade-vs-book-band-abs 0.0
+```
+
+Nota:
+- quando `--stream-alignment-mode` for diferente de `none`, o script separa `trade_time mismatches` de `trade_time shifted_by_alignment`.
+
 Optionally control the window explicitly:
 
 ```bash
 python scripts\\run_backtest_replay.py --day 2025-07-01 --symbols BTCUSDT --hours 0-23 --start-utc 2025-07-01T12:00:00Z --end-utc 2025-07-01T13:00:00Z
 ```
+
+## `preprocess_parquet_timeseries.py` (local/S3 path)
+
+File: `scripts/preprocess_parquet_timeseries.py`
+
+Purpose:
+- ordenar parquet por chave temporal/evento de cada tipo
+- remover duplicatas por chave de evento
+- reduzir regressao temporal e ruido antes do replay
+
+Examples:
+
+```bash
+python scripts\\preprocess_parquet_timeseries.py --kind trades --input trades.parquet --output trades.sorted.parquet
+python scripts\\preprocess_parquet_timeseries.py --kind orderbook --input orderbook_12.parquet --output orderbook_12.sorted.parquet
+```
+
+Knob de memoria:
+- `--max-rows-in-memory` (default `2_000_000`; `<=0` desabilita fail-fast)
 
 ## `inspect_orderbook_parquet.py` (local)
 

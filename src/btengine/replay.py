@@ -10,6 +10,7 @@ class HasEventTimeMs(Protocol):
 
 T = TypeVar("T", bound=HasEventTimeMs)
 
+
 _EVENT_TYPE_PRIORITY: dict[str, int] = {
     "DepthUpdate": 0,
     "Trade": 1,
@@ -22,9 +23,9 @@ _EVENT_TYPE_PRIORITY: dict[str, int] = {
 _EVENT_ID_ATTRS: tuple[str, ...] = (
     "transaction_time_ms",
     "trade_time_ms",
+    "timestamp_ms",
     "final_update_id",
     "trade_id",
-    "timestamp_ms",
     "next_funding_time_ms",
 )
 
@@ -38,9 +39,12 @@ def _received_time_ns_or_default(ev: object) -> int:
     return int(x)
 
 
-def _event_tie_break_key(ev: object) -> tuple[int, int, str]:
+def _event_meta_tie_break_key(ev: object) -> tuple[int, int, str]:
+    """Deterministic metadata key used before stream-order fallback."""
+
     kind = type(ev).__name__
     pri = int(_EVENT_TYPE_PRIORITY.get(kind, 99))
+
     for attr in _EVENT_ID_ATTRS:
         x = getattr(ev, attr, None)
         if x is None:
@@ -49,6 +53,7 @@ def _event_tie_break_key(ev: object) -> tuple[int, int, str]:
             return pri, int(x), kind
         except Exception:
             continue
+
     return pri, 0, kind
 
 
@@ -57,7 +62,7 @@ def merge_event_streams(*streams: Iterable[T]) -> Iterator[T]:
 
     This keeps only one event buffered per stream (k-way merge).
     For same `event_time_ms`, events are tie-broken by `received_time_ns`
-    when available, then deterministic event metadata, then stream order.
+    when available, then deterministic metadata, then stream order.
     """
 
     heap: list[tuple[int, int, int, int, str, int, T, Iterator[T]]] = []
@@ -68,7 +73,7 @@ def merge_event_streams(*streams: Iterable[T]) -> Iterator[T]:
         first = next(it, None)
         if first is None:
             continue
-        pri, tie_id, kind = _event_tie_break_key(first)
+        pri, tie_id, kind = _event_meta_tie_break_key(first)
         heapq.heappush(
             heap,
             (int(first.event_time_ms), _received_time_ns_or_default(first), pri, tie_id, kind, seq, first, it),
@@ -81,7 +86,7 @@ def merge_event_streams(*streams: Iterable[T]) -> Iterator[T]:
 
         nxt = next(it, None)
         if nxt is not None:
-            pri, tie_id, kind = _event_tie_break_key(nxt)
+            pri, tie_id, kind = _event_meta_tie_break_key(nxt)
             heapq.heappush(
                 heap,
                 (int(nxt.event_time_ms), _received_time_ns_or_default(nxt), pri, tie_id, kind, s, nxt, it),

@@ -91,7 +91,7 @@ class _EvNoRecvWithId:
     tag: str
 
 
-def test_merge_event_streams_tie_breaker_uses_event_metadata_without_received_time():
+def test_merge_event_streams_tie_breaker_without_received_time_uses_event_metadata():
     s1 = [_EvNoRecvWithId(1_000, 200, "s1_late_id")]
     s2 = [_EvNoRecvWithId(1_000, 100, "s2_early_id")]
     out = list(merge_event_streams(s1, s2))

@@ -104,6 +104,7 @@ Arquivos:
   - `SimBroker` (fees + latencia + modelo maker conservador; ver `on_time()` + `submit()`/`cancel()`)
     - params: `maker_fee_frac`, `taker_fee_frac`
     - params: `submit_latency_ms`, `cancel_latency_ms`
+    - params (slippage conservador taker): `taker_slippage_bps`, `taker_slippage_spread_frac`, `taker_slippage_abs`
     - params: `maker_queue_ahead_factor`, `maker_queue_ahead_extra_qty`, `maker_trade_participation`
     - `has_open_orders()` inclui ordens maker ativas + pendentes nao-canceladas
     - `has_pending_orders(symbol: str | None = None) -> bool`
@@ -182,6 +183,7 @@ from btengine.data.cryptohftdata import (
     iter_open_interest_for_day,
     iter_liquidations,
     iter_liquidations_for_day,
+    preprocess_parquet_file,
     build_day_stream,
 )
 ```
@@ -197,6 +199,13 @@ Config:
   - `open_interest_alignment_mode` (`fixed_delay`, `causal_asof`, `causal_asof_global`)
   - `open_interest_availability_quantile`
   - `open_interest_min_delay_ms`, `open_interest_max_delay_ms`
+  - alinhamento opcional dos demais streams:
+    - `stream_alignment_mode` (`none`, `fixed_delay`, `causal_asof`, `causal_asof_global`)
+    - `stream_alignment_quantile`
+    - `stream_alignment_min_delay_ms`, `stream_alignment_max_delay_ms`
+    - `stream_alignment_history_size`
+    - `stream_alignment_global_row_limit` (limite de linhas materializadas em `causal_asof_global`; `None`/<=0 desabilita)
+    - `trade_delay_ms`, `mark_price_delay_ms`, `ticker_delay_ms`, `liquidation_delay_ms`
   - `orderbook_hours`, `orderbook_skip_missing`
   - `skip_missing_daily_files`
   - `stream_start_ms`, `stream_end_ms`
@@ -208,6 +217,12 @@ Leitores avancados (`iter_*_advanced`):
   - se nao informado, usa `BTENGINE_SORT_ROW_LIMIT` do ambiente
   - fallback no codigo: `10_000_000` linhas
   - se exceder, o reader levanta `MemoryError` com orientacao para reduzir janela ou pre-sort upstream
+
+Preprocess:
+
+- `preprocess_parquet_file(input_path, output_path, kind=..., dedup=True, keep="last", compression="zstd", max_rows_in_memory=2_000_000)`
+  - sort + dedup deterministico por tipo de dataset
+  - falha rapido com `MemoryError` quando excede `max_rows_in_memory`
 
 ## Utilitarios
 

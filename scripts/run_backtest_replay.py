@@ -15,7 +15,15 @@ from btengine.broker import SimBroker
 from btengine.engine import BacktestEngine, EngineConfig
 from btengine.replay import merge_event_streams
 from btengine.types import DepthUpdate, Liquidation, MarkPrice, OpenInterest, Ticker, Trade
-from btengine.util import add_strict_book_args, load_dotenv, strict_book_config_from_args
+from btengine.util import (
+    add_stream_alignment_args,
+    add_strict_book_args,
+    add_taker_slippage_args,
+    load_dotenv,
+    stream_alignment_kwargs_from_args,
+    strict_book_config_from_args,
+    taker_slippage_kwargs_from_args,
+)
 
 
 def _parse_day(s: str) -> date:
@@ -144,6 +152,8 @@ def main() -> int:
     ap.add_argument("--maker-queue-ahead-factor", type=float, default=1.0, help="Multiply visible queue ahead by this factor.")
     ap.add_argument("--maker-queue-ahead-extra-qty", type=float, default=0.0, help="Add extra base qty ahead (conservative).")
     ap.add_argument("--maker-trade-participation", type=float, default=1.0, help="Trade participation factor in (0,1].")
+    add_taker_slippage_args(ap)
+    add_stream_alignment_args(ap)
     add_strict_book_args(ap, default_max_staleness_ms=250)
     args = ap.parse_args()
 
@@ -205,6 +215,7 @@ def main() -> int:
             open_interest_max_delay_ms=(
                 None if args.open_interest_max_delay_ms is None else int(args.open_interest_max_delay_ms)
             ),
+            **stream_alignment_kwargs_from_args(args),
             orderbook_hours=hours,
             orderbook_skip_missing=True,
             skip_missing_daily_files=args.skip_missing,
@@ -226,6 +237,7 @@ def main() -> int:
         maker_queue_ahead_factor=float(args.maker_queue_ahead_factor),
         maker_queue_ahead_extra_qty=float(args.maker_queue_ahead_extra_qty),
         maker_trade_participation=float(args.maker_trade_participation),
+        **taker_slippage_kwargs_from_args(args),
     )
     guard_cfg = strict_book_config_from_args(args)
     engine = BacktestEngine(
